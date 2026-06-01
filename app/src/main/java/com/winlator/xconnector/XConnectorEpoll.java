@@ -153,6 +153,20 @@ public class XConnectorEpoll implements Runnable {
         this.connectedClients.put(fd, client);
     }
 
+    /**
+     * Direct Android Compositing (DAC): hands sole ownership of a client fd to a
+     * native reader thread. Removes the fd from epoll (so the Java epoll loop
+     * stops competing for reads) and drops it from connectedClients (so shutdown
+     * won't double-close it). The native present-receiver thread becomes the
+     * sole consumer of the fd after this returns. Ported from Winlator-Ludashi-Plus.
+     */
+    public void detachClientFromEpoll(Client client) {
+        if (!this.multithreadedClients) {
+            removeFdFromEpoll(this.epollFd, client.clientSocket.fd);
+        }
+        this.connectedClients.remove(client.clientSocket.fd);
+    }
+
     @Keep
     private void handleExistingConnection(int fd) {
         Client client = this.connectedClients.get(fd);

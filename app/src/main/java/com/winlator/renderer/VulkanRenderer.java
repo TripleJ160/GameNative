@@ -121,7 +121,85 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private native void nativeSetPresentMode(long handle, int mode);
     private native void nativeSetEffect(long handle, int effectId, float sharpness);
 
+    // ── Direct Android Compositing (DAC) — native present-receiver ──────────────
+    // Implemented in Chunk B (vulkan_jni.cpp). The receiver thread reads
+    // present_msg frames from the Wine AHB socket fd and drives the existing
+    // scanout path (nativeScanoutSetBuffer) from C++, bypassing the X11 pull
+    // path. Until Chunk B lands these resolve at runtime only when DAC is used.
+    private native void nativeStartPresentReceiver(long handle, int fd,
+            long buf0, long buf1, long buf2, long buf3, int width, int height);
+    private native void nativeStopPresentReceiver(long handle);
+
     private static volatile boolean gpuImageChecked = false;
+
+    // ── DAC state ───────────────────────────────────────────────────────────────
+    private com.winlator.xenvironment.components.DirectCompositorComponent directCompositor = null;
+    private AHardwareBufferPool ahbPool = null;
+
+    /** Sets the active DirectCompositorComponent (DAC lifecycle owner), or null. */
+    public void setDirectCompositor(com.winlator.xenvironment.components.DirectCompositorComponent dcc) {
+        this.directCompositor = dcc;
+    }
+
+    /** Returns the active DirectCompositorComponent, or null when DAC is inactive. */
+    public com.winlator.xenvironment.components.DirectCompositorComponent getDirectCompositor() {
+        return directCompositor;
+    }
+
+    /** Sets the AHardwareBuffer pool backing the DAC swapchain, or null. */
+    public void setAHBPool(AHardwareBufferPool pool) {
+        this.ahbPool = pool;
+    }
+
+    /** Returns the AHardwareBuffer pool, or null when DAC is inactive. */
+    public AHardwareBufferPool getAHBPool() {
+        return ahbPool;
+    }
+
+    /**
+     * Starts the native present-receiver thread for DAC. Called by
+     * AHBSocketServerComponent when Wine's WSI connects. The thread reads frames
+     * from {@code fd} and pushes the matching pool AHB to scanout.
+     */
+    public void startPresentReceiver(int fd, long buf0, long buf1, long buf2, long buf3,
+                                     int width, int height) {
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeStartPresentReceiver(nativeHandle, fd, buf0, buf1, buf2, buf3, width, height);
+            }
+        }
+    }
+
+    /** Stops the native present-receiver thread (Wine disconnected / DAC stop). */
+    public void stopPresentReceiver() {
+        synchronized (lock) {
+            if (nativeHandle != 0) {
+                nativeStopPresentReceiver(nativeHandle);
+            }
+        }
+    }
+
+    /**
+     * Detaches the scanout SurfaceControl layers on pause without tearing down the
+     * AHB pool or Wine swapchain. Reuses GameNative's existing native detach path.
+     */
+    public void detachScanoutLayers() {
+        synchronized (lock) {
+            if (nativeHandle != 0) nativeDetachSurface(nativeHandle);
+        }
+    }
+
+    /**
+     * Reattaches the scanout SurfaceControl layers on resume. Reuses GameNative's
+     * existing native reattach path with the current game scanout surface.
+     */
+    public void reattachScanoutLayers() {
+        synchronized (lock) {
+            if (nativeHandle != 0 && scanoutGameSurface != null) {
+                nativeReattachSurface(nativeHandle, scanoutGameSurface);
+            }
+        }
+    }
 
     private long did(Drawable d) {
         return drawableIds.computeIfAbsent(d, k -> ID_GEN.getAndIncrement());

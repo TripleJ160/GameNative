@@ -13,6 +13,10 @@ public class UnixSocketConfig {
     public static final String STEAM_PIPE_PATH = "/tmp/.steam/steam_pipe";
 
     public static final String VORTEK_SERVER_PATH = "/tmp/.vortek/V0";
+    // Direct Android Compositing (DAC): Wine's AHB Vulkan WSI connects here to
+    // receive the AHardwareBuffer pool handles and ship present/release frames.
+    // Guest sees this path via the ANDROID_AHB_SERVER env var.
+    public static final String AHB_SERVER_PATH = "/tmp/.ahb/AHB0";
     public final String path;
 
     private UnixSocketConfig(String path) {
