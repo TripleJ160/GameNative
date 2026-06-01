@@ -26,7 +26,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                                        Pointer.OnPointerMotionListener,
                                        XServerRenderer {
 
-    static { System.loadLibrary("vulkan_renderer"); }
+    static {
+        System.loadLibrary("vulkan_renderer");
+        // DAC present-receiver natives (nativeStartPresentReceiver/Stop) live in
+        // the standalone libdac.so. Load it too; tolerate absence so non-DAC
+        // builds still work.
+        try { System.loadLibrary("dac"); } catch (UnsatisfiedLinkError ignored) {}
+    }
     public static final int EFFECT_NONE = 0;
     public static final int EFFECT_FSR = 1;
     public static final int EFFECT_DLS = 2;

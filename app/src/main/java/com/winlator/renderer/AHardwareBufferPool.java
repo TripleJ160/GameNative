@@ -147,7 +147,10 @@ public class AHardwareBufferPool {
 
     static {
         try {
-            System.loadLibrary("winlator");
+            // DAC natives live in the standalone libdac.so (kept separate from
+            // GameNative's prebuilt libwinlator/libvulkan_renderer — see
+            // dac_present_receiver.cpp for why).
+            System.loadLibrary("dac");
         } catch (UnsatisfiedLinkError e) {
             // Expected in JVM unit-test environments where the native library
             // is not available. Tests must supply a fake AHardwareBufferNativeCalls
