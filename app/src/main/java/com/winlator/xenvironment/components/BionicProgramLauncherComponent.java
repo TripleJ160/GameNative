@@ -18,6 +18,7 @@ import androidx.annotation.NonNull;
 import com.winlator.PrefManager;
 
 import app.gamenative.utils.LsfgVkManager;
+import app.gamenative.utils.DacLayerManager;
 import com.winlator.box86_64.Box86_64Preset;
 import com.winlator.box86_64.Box86_64PresetManager;
 import com.winlator.container.Container;
@@ -339,6 +340,16 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             LsfgVkManager.writeConfig(container);
             LsfgVkManager.applyLaunchEnv(container, envVars);
         }
+
+        // Direct Android Compositing (DAC). Installs the AHB Vulkan layer into the
+        // container and injects its env vars when a DAC pipeline (quality/performance)
+        // is selected on a wrapper/Turnip driver. applyLaunchEnv() always runs so it
+        // can set DISABLE_AHB_LAYER + strip the manifest when DAC is off, keeping the
+        // layer dormant on non-DAC launches. See DacLayerManager.
+        DacLayerManager.ensureRuntimeInstalled(environment.getContext(), container);
+        boolean dacArmed = DacLayerManager.applyLaunchEnv(container, envVars);
+        Log.d("BionicProgramLauncherComponent", "DAC pipeline=" + DacLayerManager.pipeline(container)
+                + " armed=" + dacArmed);
 
         Log.d("BionicProgramLauncherComponent", "env vars are " + envVars.toString());
 
