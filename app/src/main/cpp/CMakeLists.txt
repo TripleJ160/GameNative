@@ -15,6 +15,7 @@ add_library(winlator SHARED
             winlator/sysvshared_memory.c
             winlator/xconnector_epoll.c
             winlator/alsa_client.c
+            winlator/ahb_bridge.c
             winlator/patchelf_wrapper.cpp)
 
 target_link_libraries(winlator
@@ -47,6 +48,7 @@ add_library(vulkan_renderer SHARED
             winlator/vulkan_jni.cpp
             winlator/VulkanRendererContext.cpp
             winlator/VulkanRendererScanout.cpp
+            winlator/dac_present_receiver.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 
