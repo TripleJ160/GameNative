@@ -75,6 +75,17 @@ android {
             abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
         }
 
+        // Build ONLY the DAC-bearing renderer (+ AHB pool) from source. The rest
+        // of the native libs stay prebuilt in jniLibs. The decompiled gpu_image.c
+        // lives in the (unbuilt) winlator target, so it never gets compiled. DAC
+        // is arm64-only, so restrict the native build to arm64-v8a.
+        externalNativeBuild {
+            cmake {
+                targets("vulkan_renderer", "dac")
+                abiFilters("arm64-v8a")
+            }
+        }
+
         // Localization support - specify which languages to include
         resourceConfigurations += listOf(
             "en",      // English (default)
@@ -130,6 +141,17 @@ android {
     lint {
         checkReleaseBuilds = false
         abortOnError = false
+    }
+
+    // Source-build the DAC renderer (vulkan_renderer + dac targets, see
+    // defaultConfig.externalNativeBuild). glslangValidator is discovered by the
+    // CMakeLists. The prebuilt libvulkan_renderer.so / libdac.so were removed
+    // from jniLibs/arm64-v8a so this build provides them (no duplicate-.so clash).
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

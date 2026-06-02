@@ -4,6 +4,21 @@ Project(Pluvia)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wno-unused-function -Wimplicit-function-declaration")
 
+# glslangValidator (for the vulkan_renderer window shaders). Not in the NDK; it
+# ships with the Android emulator and the Vulkan SDK. Discover it via common
+# locations so the Gradle externalNativeBuild works without a manual PATH; fall
+# back to bare "glslangValidator" on PATH if not found.
+find_program(GLSLANG_VALIDATOR
+    NAMES glslangValidator
+    HINTS
+        "${ANDROID_NDK}/../../emulator/lib64/vulkan"
+        "$ENV{ANDROID_HOME}/emulator/lib64/vulkan"
+        "$ENV{ANDROID_SDK_ROOT}/emulator/lib64/vulkan"
+        "$ENV{VULKAN_SDK}/bin")
+if(NOT GLSLANG_VALIDATOR)
+    set(GLSLANG_VALIDATOR glslangValidator)
+endif()
+
 #add_subdirectory(proot)
 add_subdirectory(virglrenderer)
 add_subdirectory(patchelf)
@@ -40,7 +55,7 @@ target_link_libraries(winlator
 
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
-    COMMAND glslangValidator -V --vn window_vert_code -x
+    COMMAND ${GLSLANG_VALIDATOR} -V --vn window_vert_code -x
             -o ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_SOURCE_DIR}/winlator/window.vert
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/winlator/window.vert
@@ -48,7 +63,7 @@ add_custom_command(
 
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h
-    COMMAND glslangValidator -V --vn window_frag_code -x
+    COMMAND ${GLSLANG_VALIDATOR} -V --vn window_frag_code -x
             -o ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h
             ${CMAKE_CURRENT_SOURCE_DIR}/winlator/window.frag
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/winlator/window.frag
