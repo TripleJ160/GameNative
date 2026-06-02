@@ -149,6 +149,9 @@ import com.winlator.widget.TouchpadView
 import com.winlator.renderer.GLRenderer
 import com.winlator.renderer.VulkanRenderer
 import com.winlator.renderer.XServerRenderer
+import com.winlator.xenvironment.components.DirectCompositorComponent
+import com.winlator.xenvironment.components.AHBSocketServerComponent
+import app.gamenative.utils.DacLayerManager
 import com.winlator.widget.XServerRendererView
 import com.winlator.widget.XServerView
 import com.winlator.widget.XServerViewGL
@@ -469,6 +472,8 @@ fun XServerScreen(
     fun loadPerformanceHudConfig(): PerformanceHudConfig {
         return PerformanceHudConfig(
             showFrameRate = PrefManager.performanceHudShowFrameRate,
+            showFrameTime = PrefManager.performanceHudShowFrameTime,
+            showLatency = PrefManager.performanceHudShowLatency,
             showCpuUsage = PrefManager.performanceHudShowCpuUsage,
             showGpuUsage = PrefManager.performanceHudShowGpuUsage,
             showRamUsage = PrefManager.performanceHudShowRamUsage,
@@ -502,6 +507,8 @@ fun XServerScreen(
 
     fun persistPerformanceHudConfig(config: PerformanceHudConfig) {
         PrefManager.performanceHudShowFrameRate = config.showFrameRate
+        PrefManager.performanceHudShowFrameTime = config.showFrameTime
+        PrefManager.performanceHudShowLatency = config.showLatency
         PrefManager.performanceHudShowCpuUsage = config.showCpuUsage
         PrefManager.performanceHudShowGpuUsage = config.showGpuUsage
         PrefManager.performanceHudShowRamUsage = config.showRamUsage
@@ -664,10 +671,30 @@ fun XServerScreen(
         val hud = PerformanceHudView(
             context = context,
             fpsProvider = {
-                val raw = frameRating?.currentFPS ?: 0f
-                val mult = if (isLsfgAvailable && lsfgMultiplier >= 2) lsfgMultiplier else 1
-                raw * mult
+                val r = xServerView?.renderer as? VulkanRenderer
+                val dacFps = r?.getDacFps() ?: 0f
+                if (dacFps > 0f) {
+                    // DAC bypasses the Java frame path, so frameRating reads 0;
+                    // derive FPS from libdac's frametime instead.
+                    dacFps
+                } else {
+                    val raw = frameRating?.currentFPS ?: 0f
+                    val mult = if (isLsfgAvailable && lsfgMultiplier >= 2) lsfgMultiplier else 1
+                    raw * mult
+                }
             },
+            // Latency + jitter: real DAC compositor metrics from libdac.so. In native
+            // mode these read 0 (not measurable — prebuilt async renderer); the HUD
+            // simply hides the rows. Frametime: DAC from libdac, native from the
+            // proven frameRating counter (1000/FPS) — clean + comparable.
+            latencyProvider = { (xServerView?.renderer as? VulkanRenderer)?.getDacLatencyMs() ?: 0f },
+            frameTimeProvider = {
+                val r = xServerView?.renderer as? VulkanRenderer
+                val dacFt = r?.getDacFrameTimeMs() ?: 0f
+                if (dacFt > 0f) dacFt
+                else { val f = frameRating?.currentFPS ?: 0f; if (f > 0f) 1000f / f else 0f }
+            },
+            jitterProvider = { (xServerView?.renderer as? VulkanRenderer)?.getDacJitterMs() ?: 0f },
             initialConfig = performanceHudConfig,
             initialCompactMode = PrefManager.performanceHudCompactMode,
         )
@@ -2008,7 +2035,8 @@ fun XServerScreen(
                                 xServerView!!.getxServer(),
                                 containerVariantChanged,
                                 onGameLaunchError,
-                                isOffline
+                                isOffline,
+                                java.util.function.Supplier { xServerView?.renderer as? VulkanRenderer }
                             )
                             if (!PluviaApp.isActivityInForeground && !neverSuspend) {
                                 PluviaApp.xEnvironment?.onPause()
@@ -3030,7 +3058,10 @@ private fun setupXEnvironment(
     xServer: XServer,
     containerVariantChanged: Boolean,
     onGameLaunchError: ((String) -> Unit)? = null,
-    offline: Boolean = false
+    offline: Boolean = false,
+    // DAC: resolves the VulkanRenderer lazily (created on SurfaceView ready,
+    // possibly after this function runs). Used by the DirectCompositorComponent.
+    rendererSupplier: java.util.function.Supplier<VulkanRenderer?> = java.util.function.Supplier { null }
 ): XEnvironment {
     ProcessHelper.hardKillStaleWineProcesses()
 
@@ -3272,6 +3303,20 @@ private fun setupXEnvironment(
         }
         val options2: VortekRendererComponent.Options? = VortekRendererComponent.Options.fromKeyValueSet(context, gcfg)
         environment.addComponent(VortekRendererComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.VORTEK_SERVER_PATH), options2, context))
+    } else if (DacLayerManager.isArmed(container)) {
+        // Direct Android Compositing: wrapper/Turnip in-guest ICD + a DAC pipeline
+        // selected. No host renderer component (the ICD runs in-guest); instead we
+        // own the AHB pool and the socket Wine's AHB layer connects to. The
+        // renderer is resolved lazily (supplier) since it isn't ready yet.
+        Timber.i("Adding Direct Android Compositing components (pipeline=" + DacLayerManager.pipeline(container) + ")")
+        val dcc = DirectCompositorComponent(rendererSupplier, xServer.screenInfo.width.toInt(), xServer.screenInfo.height.toInt())
+        environment.addComponent(dcc)
+        environment.addComponent(
+            AHBSocketServerComponent(
+                UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.AHB_SERVER_PATH),
+                dcc,
+            ),
+        )
     }
 
     guestProgramLauncherComponent.envVars = envVars

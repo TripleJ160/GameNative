@@ -17,15 +17,12 @@ add_library(winlator SHARED
             winlator/alsa_client.c
             winlator/patchelf_wrapper.cpp)
 
-# Direct Android Compositing — standalone lib. Kept separate from winlator /
-# vulkan_renderer because GameNative ships those as prebuilt .so (their committed
-# C sources don't fully rebuild — e.g. gpu_image.c contains decompiler output).
-# libdac.so drives scanout by dlsym-ing the prebuilt libvulkan_renderer.so's
-# exported nativeScanoutSetBuffer/nativeInitScanout, leaving the prebuilts
-# untouched. Builds only from first-party DAC sources.
+# Direct Android Compositing AHardwareBuffer pool (Android-side allocator +
+# release-fence helpers). The DAC present-receiver itself is now compiled INTO
+# vulkan_renderer (see below) so it can call VulkanRendererContext directly,
+# instead of the old dlsym workaround. This lib holds only the pool natives.
 add_library(dac SHARED
-            winlator/ahb_bridge.c
-            winlator/dac_present_receiver.cpp)
+            winlator/ahb_bridge.c)
 target_link_libraries(dac
                       log
                       android
@@ -61,6 +58,7 @@ add_library(vulkan_renderer SHARED
             winlator/vulkan_jni.cpp
             winlator/VulkanRendererContext.cpp
             winlator/VulkanRendererScanout.cpp
+            winlator/dac_present_receiver.cpp
             ${CMAKE_CURRENT_BINARY_DIR}/window_vert.h
             ${CMAKE_CURRENT_BINARY_DIR}/window_frag.h)
 

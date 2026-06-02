@@ -17,6 +17,12 @@ typedef void  (*pfn_STSetBuffer)(void*, void*, AHardwareBuffer*, int);
 typedef void  (*pfn_STSetZOrder)(void*, void*, int32_t);
 typedef void  (*pfn_STSetVisibility)(void*, void*, int8_t);
 typedef void  (*pfn_STSetGeometry)(void*, void*, const ARect*, const ARect*, int32_t);
+typedef void  (*pfn_STSetOnComplete)(void*, void*, void(*)(void*, void*));
+typedef int64_t (*pfn_STStatsLatchTime)(void*);
+
+// DAC metric bridge (implemented in dac_present_receiver.cpp, same lib).
+extern "C" uint64_t dac_now_us();
+extern "C" void     dac_record_true_latency(uint64_t latencyUs);
 
 bool VulkanRendererContext::loadScanoutApi() {
     if (scanoutApiLoaded) return fnSCCreateFromWin != nullptr;
@@ -37,6 +43,9 @@ bool VulkanRendererContext::loadScanoutApi() {
     fnSTSetZOrder     = dlsym(lib, "ASurfaceTransaction_setZOrder");
     fnSTSetVisibility = dlsym(lib, "ASurfaceTransaction_setVisibility");
     fnSTSetGeometry   = dlsym(lib, "ASurfaceTransaction_setGeometry");
+    // Optional (latency only): present-completion callback + latch timestamp.
+    fnSTSetOnComplete  = dlsym(lib, "ASurfaceTransaction_setOnComplete");
+    fnSTStatsLatchTime = dlsym(lib, "ASurfaceTransactionStats_getLatchTime");
 
     bool coreOk = fnSCCreateFromWin && fnSCRelease &&
                   fnSTCreate && fnSTDelete && fnSTApply &&
@@ -171,6 +180,11 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
 
     AHardwareBuffer_acquire(ahb);
 
+    // T1 = frame arrival at the compositor (≈ recv time for DAC, X11-deliver for
+    // native). The onComplete callback below stamps T2 = SurfaceFlinger latch time,
+    // giving true, comparable compositor latency for BOTH pipelines.
+    uint64_t t1 = dac_now_us();
+
     void* t = scanoutGameTx;
 
     int32_t cw = containerWidth  > 0 ? containerWidth  : w;
@@ -193,6 +207,25 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
           ST_SETVIS(t, scanoutGameSC, 1);
           scanoutVisShown = true;
       }
+    }
+
+    // Register a per-frame present-completion callback for TRUE latency:
+    // T2 = SurfaceFlinger latch time (real, queue-aware) − T1 (arrival). This is
+    // latency-only and does NOT touch the release path (the receiver still frees
+    // slots), so it's non-interfering.
+    if (fnSTSetOnComplete && fnSTStatsLatchTime) {
+        struct LatCtx { uint64_t t1; void* getLatch; };
+        auto* lc = new LatCtx{ t1, fnSTStatsLatchTime };
+        ((pfn_STSetOnComplete)fnSTSetOnComplete)(t, (void*)lc,
+            [](void* context, void* stats) {
+                auto* c = reinterpret_cast<LatCtx*>(context);
+                int64_t latchNs = ((pfn_STStatsLatchTime)c->getLatch)(stats);
+                if (latchNs > 0) {
+                    uint64_t latchUs = (uint64_t)latchNs / 1000ULL;
+                    if (latchUs > c->t1) dac_record_true_latency(latchUs - c->t1);
+                }
+                delete c;
+            });
     }
 
     ST_APPLY(t);

@@ -220,18 +220,23 @@ void VulkanRendererContext::createLogicalDevice() {
       for (auto& e:av) {
           if (strcmp(e.extensionName,"VK_EXT_filter_cubic")==0
            || strcmp(e.extensionName,"VK_IMG_filter_cubic")==0) cubicSupported=true;
+          if (strcmp(e.extensionName,"VK_GOOGLE_display_timing")==0) displayTimingSupported=true;
       } }
     std::vector<const char*> extList = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME
     };
     if (cubicSupported) extList.push_back("VK_EXT_filter_cubic");
+    if (displayTimingSupported) extList.push_back("VK_GOOGLE_display_timing");
     VkDeviceCreateInfo ci{}; ci.sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pQueueCreateInfos=&qi; ci.queueCreateInfoCount=1;
     ci.enabledExtensionCount=(uint32_t)extList.size(); ci.ppEnabledExtensionNames=extList.data();
     if (vk_.CreateDevice(physicalDevice,&ci,nullptr,&device)!=VK_SUCCESS) throw std::runtime_error("device");
     vk_.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)gipa(instance, "vkGetDeviceProcAddr");
     loadDeviceDispatch();
+    if (displayTimingSupported && vk_.GetDeviceProcAddr)
+        fnGetPastPresentationTimingGOOGLE =
+            (void*)vk_.GetDeviceProcAddr(device, "vkGetPastPresentationTimingGOOGLE");
     vk_.GetDeviceQueue(device,graphicsQueueFamilyIndex,0,&graphicsQueue);
 
     vk_.GetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -827,8 +832,15 @@ void VulkanRendererContext::flushDeleteQueue() {
     deleteQueue.clear();
 }
 
+// DAC metric bridge (implemented in dac_present_receiver.cpp, same lib).
+extern "C" uint64_t dac_now_us();
+extern "C" void     dac_record_true_latency(uint64_t latencyUs);
+
 void VulkanRendererContext::renderFrame() {
     std::shared_lock<std::shared_mutex> frameLock(frameMutex);
+
+    // T1 = render start (≈ frame arrival) for native-mode compositor latency.
+    uint64_t frameStartUs = dac_now_us();
 
     needsRender.store(false,std::memory_order_relaxed);
     cursorMoved.store(false,std::memory_order_relaxed);
@@ -967,8 +979,46 @@ ok=true;}catch(...){}
     VkSwapchainKHR scs[]={swapchain};
     VkPresentInfoKHR pi{}; pi.sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     pi.waitSemaphoreCount=1; pi.pWaitSemaphores=sSem; pi.swapchainCount=1; pi.pSwapchains=scs; pi.pImageIndices=&imgIdx;
+
+    // Native compositor latency (VK_GOOGLE_display_timing): tag this present with
+    // an id + render-start time; below we read back the actual on-screen present
+    // time (~2 frames later) and feed the same latency EMA the HUD reads.
+    VkPresentTimeGOOGLE pt{};
+    VkPresentTimesInfoGOOGLE pti{};
+    if (displayTimingSupported && fnGetPastPresentationTimingGOOGLE) {
+        uint64_t pid = nextPresentId++;
+        pt.presentID = pid; pt.desiredPresentTime = 0;
+        pti.sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE;
+        pti.swapchainCount = 1; pti.pTimes = &pt;
+        pi.pNext = &pti;
+        presentRing[presentRingHead] = { pid, frameStartUs };
+        presentRingHead = (presentRingHead + 1) % 16;
+    }
+
     res=vk_.QueuePresentKHR(graphicsQueue,&pi);
     if (res==VK_ERROR_OUT_OF_DATE_KHR||res==VK_ERROR_SURFACE_LOST_KHR) fbResized.store(true);
+
+    if (displayTimingSupported && fnGetPastPresentationTimingGOOGLE && res >= 0) {
+        auto getPast = (PFN_vkGetPastPresentationTimingGOOGLE)fnGetPastPresentationTimingGOOGLE;
+        uint32_t cnt = 0;
+        getPast(device, swapchain, &cnt, nullptr);
+        if (cnt > 0) {
+            if (cnt > 16) cnt = 16;
+            VkPastPresentationTimingGOOGLE timings[16];
+            getPast(device, swapchain, &cnt, timings);
+            for (uint32_t i=0;i<cnt;i++) {
+                uint64_t dispUs = timings[i].actualPresentTime / 1000ULL;
+                for (int j=0;j<16;j++) {
+                    if (presentRing[j].pid == timings[i].presentID && presentRing[j].t1Us != 0) {
+                        if (dispUs > presentRing[j].t1Us)
+                            dac_record_true_latency(dispUs - presentRing[j].t1Us);
+                        presentRing[j].t1Us = 0;
+                        break;
+                    }
+                }
+            }
+        }
+    }
     currentFrame=(currentFrame+1)%MAX_FRAMES_IN_FLIGHT;
 }
 

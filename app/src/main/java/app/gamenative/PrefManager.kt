@@ -343,6 +343,20 @@ object PrefManager {
             setPref(PERFORMANCE_HUD_SHOW_FRAME_RATE, value)
         }
 
+    private val PERFORMANCE_HUD_SHOW_FRAME_TIME = booleanPreferencesKey("performance_hud_show_frame_time")
+    var performanceHudShowFrameTime: Boolean
+        get() = getPref(PERFORMANCE_HUD_SHOW_FRAME_TIME, false)
+        set(value) {
+            setPref(PERFORMANCE_HUD_SHOW_FRAME_TIME, value)
+        }
+
+    private val PERFORMANCE_HUD_SHOW_LATENCY = booleanPreferencesKey("performance_hud_show_latency")
+    var performanceHudShowLatency: Boolean
+        get() = getPref(PERFORMANCE_HUD_SHOW_LATENCY, false)
+        set(value) {
+            setPref(PERFORMANCE_HUD_SHOW_LATENCY, value)
+        }
+
     private val PERFORMANCE_HUD_SHOW_CPU_USAGE = booleanPreferencesKey("performance_hud_show_cpu_usage")
     var performanceHudShowCpuUsage: Boolean
         get() = getPref(PERFORMANCE_HUD_SHOW_CPU_USAGE, true)

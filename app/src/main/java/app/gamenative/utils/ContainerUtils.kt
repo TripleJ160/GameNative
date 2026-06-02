@@ -336,6 +336,8 @@ object ContainerUtils {
             sharpnessDenoise = container.getExtra("sharpnessDenoise", "100").toIntOrNull() ?: 100,
             // LSFG Vulkan frame generation
             lsfgEnabled = container.getExtra(LsfgVkManager.EXTRA_ARMED, "false").toBoolean(),
+            // DAC graphics pipeline (quality / performance / native)
+            graphicsPipeline = container.getExtra(DacLayerManager.EXTRA_GRAPHICS_PIPELINE, DacLayerManager.DEFAULT_PIPELINE),
         )
     }
 
@@ -512,6 +514,7 @@ object ContainerUtils {
         container.putExtra("sharpnessDenoise", containerData.sharpnessDenoise.toString())
         // LSFG Vulkan frame generation
         container.putExtra(LsfgVkManager.EXTRA_ARMED, containerData.lsfgEnabled.toString())
+        container.putExtra(DacLayerManager.EXTRA_GRAPHICS_PIPELINE, containerData.graphicsPipeline)
         try {
             container.language = containerData.language
         } catch (e: Exception) {

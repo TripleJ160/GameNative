@@ -21,6 +21,8 @@ enum class PerformanceHudSize(val prefValue: String) {
  */
 data class PerformanceHudConfig(
     val showFrameRate: Boolean = true,
+    val showFrameTime: Boolean = false,
+    val showLatency: Boolean = false,
     val showCpuUsage: Boolean = true,
     val showGpuUsage: Boolean = true,
     val showRamUsage: Boolean = true,

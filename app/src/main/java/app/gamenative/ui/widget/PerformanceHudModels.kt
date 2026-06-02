@@ -2,6 +2,8 @@ package app.gamenative.ui.widget
 
 internal enum class MetricId {
     FPS,
+    FRAMETIME,
+    LATENCY,
     CPU,
     GPU,
     RAM,
@@ -30,7 +32,10 @@ internal data class HudSnapshot(
     val fpsValue: Float,
     val cpuValue: Float?,
     val gpuValue: Float?,
+    val frameTimeValue: Float,
     val fps: String,
+    val frametime: String?,
+    val latency: String?,
     val cpu: String?,
     val gpu: String?,
     val ram: String,

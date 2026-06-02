@@ -50,6 +50,11 @@ import kotlinx.coroutines.withContext
 class PerformanceHudView(
     context: Context,
     private val fpsProvider: () -> Float,
+    // ms. DAC compositor latency when DAC is active, else native-mode (X11) EMA.
+    private val latencyProvider: () -> Float = { 0f },
+    // ms. Frametime + jitter (DAC or native-mode). Comparable across all 3 modes.
+    private val frameTimeProvider: () -> Float = { 0f },
+    private val jitterProvider: () -> Float = { 0f },
     initialConfig: PerformanceHudConfig = PerformanceHudConfig(),
     initialCompactMode: Boolean = false,
 ) : FrameLayout(context) {
@@ -88,6 +93,13 @@ class PerformanceHudView(
         graphColor = 0xFF7CFF6B.toInt(),
         graphScaleMode = GraphScaleMode.FPS_DYNAMIC,
     )
+    private val frameTimeMetric = createMetricViews(
+        id = MetricId.FRAMETIME,
+        textColor = 0xFF80CBC4.toInt(),
+        graphColor = 0xFF80CBC4.toInt(),
+        graphScaleMode = GraphScaleMode.FPS_DYNAMIC,
+    )
+    private val latencyMetric = createMetricViews(MetricId.LATENCY, 0xFFFF8A65.toInt())
     private val cpuMetric = createMetricViews(
         id = MetricId.CPU,
         textColor = 0xFF42A5F5.toInt(),
@@ -111,6 +123,8 @@ class PerformanceHudView(
 
     private val allMetrics = listOf(
         fpsMetric,
+        frameTimeMetric,
+        latencyMetric,
         cpuMetric,
         gpuMetric,
         ramMetric,
@@ -209,8 +223,14 @@ class PerformanceHudView(
             while (isActive) {
                 val rawFps = fpsProvider()
                 val currentFps = if (rawFps.isFinite()) rawFps.coerceAtLeast(0f) else 0f
+                val rawLatency = latencyProvider()
+                val latencyMs = if (rawLatency.isFinite()) rawLatency.coerceAtLeast(0f) else 0f
+                val rawFt = frameTimeProvider()
+                val frameTimeMs = if (rawFt.isFinite()) rawFt.coerceAtLeast(0f) else 0f
+                val rawJitter = jitterProvider()
+                val jitterMs = if (rawJitter.isFinite()) rawJitter.coerceAtLeast(0f) else 0f
                 val snapshot = withContext(Dispatchers.IO) {
-                    collectSnapshot(currentFps)
+                    collectSnapshot(currentFps, latencyMs, frameTimeMs, jitterMs)
                 }
                 renderSnapshot(snapshot)
                 delay(UPDATE_INTERVAL_MS)
@@ -305,7 +325,12 @@ class PerformanceHudView(
         }
     }
 
-    private fun collectSnapshot(currentFps: Float): HudSnapshot {
+    private fun collectSnapshot(
+        currentFps: Float,
+        latencyMs: Float,
+        frameTimeMs: Float,
+        jitterMs: Float,
+    ): HudSnapshot {
         val cpuPercent = readCpuUsagePercent()
         val gpuPercent = readGpuUsagePercent()
         val batterySnapshot = collectBatterySnapshot()
@@ -313,7 +338,14 @@ class PerformanceHudView(
             fpsValue = currentFps,
             cpuValue = cpuPercent?.toFloat(),
             gpuValue = gpuPercent?.toFloat(),
+            frameTimeValue = frameTimeMs,
             fps = String.format(Locale.US, "FPS %.1f", currentFps),
+            frametime = when {
+                frameTimeMs <= 0f -> null
+                jitterMs > 0f -> String.format(Locale.US, "FT %.1f±%.1f ms", frameTimeMs, jitterMs)
+                else -> String.format(Locale.US, "FT %.1f ms", frameTimeMs) // native: jitter not instrumented
+            },
+            latency = if (latencyMs > 0f) String.format(Locale.US, "LAT %.1f ms", latencyMs) else null,
             cpu = cpuPercent?.let { "CPU $it%" },
             gpu = gpuPercent?.let { "GPU $it%" },
             ram = "RAM ${readUsedRamText()}",
@@ -398,6 +430,8 @@ class PerformanceHudView(
     private fun recordGraphSamples(snapshot: HudSnapshot) {
         fpsMetric.stackedGraph?.addSample(snapshot.fpsValue)
         fpsMetric.compactGraph?.addSample(snapshot.fpsValue)
+        frameTimeMetric.stackedGraph?.addSample(snapshot.frameTimeValue)
+        frameTimeMetric.compactGraph?.addSample(snapshot.frameTimeValue)
         cpuMetric.stackedGraph?.addSample(snapshot.cpuValue)
         cpuMetric.compactGraph?.addSample(snapshot.cpuValue)
         gpuMetric.stackedGraph?.addSample(snapshot.gpuValue)
@@ -406,6 +440,8 @@ class PerformanceHudView(
 
     private fun applySnapshotText(snapshot: HudSnapshot) {
         updateMetricText(fpsMetric, snapshot.fps)
+        updateMetricText(frameTimeMetric, snapshot.frametime)
+        updateMetricText(latencyMetric, snapshot.latency)
         updateMetricText(cpuMetric, snapshot.cpu)
         updateMetricText(gpuMetric, snapshot.gpu)
         updateMetricText(ramMetric, snapshot.ram)
@@ -427,6 +463,10 @@ class PerformanceHudView(
     private fun refreshVisibleMetrics() {
         val visibleMetrics = buildList {
             addMetricIfVisible(fpsMetric, config.showFrameRate, config.showFrameRateGraph)
+            addMetricIfVisible(frameTimeMetric, config.showFrameTime)
+            // True compositor latency (arrival → SurfaceFlinger latch) via the
+            // renderer's onComplete hook — works for both DAC and native scanout.
+            addMetricIfVisible(latencyMetric, config.showLatency)
             addMetricIfVisible(cpuMetric, config.showCpuUsage, config.showCpuUsageGraph)
             addMetricIfVisible(gpuMetric, config.showGpuUsage, config.showGpuUsageGraph)
             addMetricIfVisible(ramMetric, config.showRamUsage)

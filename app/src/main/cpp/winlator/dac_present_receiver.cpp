@@ -1,17 +1,13 @@
 /*
  * dac_present_receiver.cpp — Direct Android Compositing present-receiver thread.
  *
- * Built into a STANDALONE libdac.so (with ahb_bridge.c), NOT into GameNative's
- * libvulkan_renderer / libwinlator. This is deliberate: GameNative's committed
- * native C sources are partly decompiled (e.g. gpu_image.c) and cannot be
- * rebuilt cleanly, and its real .so are prebuilt + committed. So instead of
- * rebuilding their libs, libdac.so drives scanout by dlsym-ing the already-
- * exported JNI entrypoints from the prebuilt libvulkan_renderer.so:
- *     Java_com_winlator_renderer_VulkanRenderer_nativeScanoutSetBuffer
- *     Java_com_winlator_renderer_VulkanRenderer_nativeInitScanout
- * Both ignore their JNIEnv and jobject args (they only cast the jlong handle
- * and call VulkanRendererContext methods), so we invoke them with null env/obj.
- * This leaves GameNative's prebuilt libs byte-for-byte untouched.
+ * INTEGRATED into libvulkan_renderer.so (Phase 1): compiled as part of the
+ * vulkan_renderer CMake target alongside vulkan_jni.cpp, so it drives scanout
+ * by calling VulkanRendererContext methods DIRECTLY (ctx->scanoutSetBuffer /
+ * ctx->initScanout) — no dlsym, no null-env JNI trampoline. This supersedes the
+ * earlier standalone-libdac + dlsym workaround that existed only because the
+ * renderer was a prebuilt blob; it now builds from source (the source matches
+ * the prebuilt 1:1), so DAC is a first-class part of the renderer.
  *
  * Flow: Wine's AHB Vulkan layer renders DXVK frames into the shared
  * AHardwareBuffer pool and sends MSG_PRESENT (slot_index + render-complete
@@ -26,13 +22,16 @@
 
 #include <jni.h>
 #include <android/log.h>
-#include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
 #include <cstring>
 #include <atomic>
+#include <time.h>
 #include <sys/socket.h>
+#include <android/choreographer.h>
+#include <android/looper.h>
+#include "VulkanRendererContext.h"
 
 #define LOG_TAG "DAC_Receiver"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -41,6 +40,7 @@
 
 #define MSG_PRESENT 1
 #define MSG_RELEASE 2
+#define MSG_VSYNC   6   /* Android → Wine: real panel vsync (AChoreographer) */
 
 /* Wire layout — MUST match the Wine-side AHB layer (dlls/wineandroid.drv). */
 struct present_msg {
@@ -62,27 +62,55 @@ struct release_msg {
 
 #define DAC_MAX_SLOTS 4
 
-/* dlsym'd JNI entrypoints from the prebuilt libvulkan_renderer.so. Signatures
- * mirror the real exports; env/obj are unused by those functions. */
-typedef void (*pfn_scanoutSetBuffer)(void* env, void* obj, jlong handle,
-                                     jlong ahbPtr, jint x, jint y, jint w, jint h, jint fenceFd);
-typedef void (*pfn_initScanout)(void* env, void* obj, jlong handle);
-
 struct DacReceiver {
     int clientFd = -1;
     int slotCount = 0;
     int width = 0, height = 0;
-    jlong rendererHandle = 0;          /* VulkanRendererContext* as jlong */
+    VulkanRendererContext* ctx = nullptr;   /* the renderer (direct C++ calls) */
     void* slots[DAC_MAX_SLOTS] = {nullptr, nullptr, nullptr, nullptr}; /* AHardwareBuffer* as void* */
-    pfn_scanoutSetBuffer scanoutSetBuffer = nullptr;
-    pfn_initScanout      initScanout = nullptr;
     std::atomic<bool> running{false};
     pthread_t thread = 0;
     bool threadStarted = false;
     long frameCount = 0;
+    // Phase-lock vsync source (AChoreographer → MSG_VSYNC), Ludashi parity.
+    pthread_t vsyncThread = 0;
+    bool vsyncThreadStarted = false;
+    ALooper* vsyncLooper = nullptr;
+    AChoreographer* vsyncChoreographer = nullptr;
 };
 
 static DacReceiver* g_dacReceiver = nullptr;
+
+/* ── Performance metrics (read by the HUD via JNI getters in libdac) ──────────
+ * DAC compositor latency EMA: T1 = present_msg arrival (recvmsg return),
+ * T2 = scanout submit (ASurfaceTransaction apply). Same 7/8 EMA + 500ms
+ * outlier guard as Winlator's VulkanRendererContext. Frametime = interval
+ * between present arrivals; jitter = mean abs deviation of frametime.
+ * All in microseconds; the Java side divides by 1000 for ms. */
+static std::atomic<uint64_t> g_dacLatencyUs{0};
+static std::atomic<uint64_t> g_dacFrameTimeUs{0};
+static std::atomic<uint64_t> g_dacJitterUs{0};
+
+static inline uint64_t mono_us() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+/* 7/8 EMA (alpha = 1/8), matching Winlator's latencyEmaUs. */
+static inline uint64_t ema_us(std::atomic<uint64_t>& acc, uint64_t sample) {
+    if (sample >= 500000ULL) return acc.load(std::memory_order_relaxed); // >500ms outlier
+    uint64_t prev = acc.load(std::memory_order_relaxed);
+    uint64_t next = (prev == 0) ? sample : (prev * 7 + sample) / 8;
+    acc.store(next, std::memory_order_relaxed);
+    return next;
+}
+
+/* Bridge for VulkanRendererScanout's onComplete callback to report TRUE
+ * compositor latency (arrival → SurfaceFlinger latch). Works for both DAC and
+ * native scanout since both go through scanoutSetBuffer. */
+extern "C" uint64_t dac_now_us() { return mono_us(); }
+extern "C" void dac_record_true_latency(uint64_t latencyUs) { ema_us(g_dacLatencyUs, latencyUs); }
 
 static void send_release(int fd, uint32_t slot, uint8_t displayed) {
     if (fd < 0) return;
@@ -95,34 +123,57 @@ static void send_release(int fd, uint32_t slot, uint8_t displayed) {
     send(fd, &rel, sizeof(rel), MSG_NOSIGNAL);
 }
 
-/* Resolve the scanout JNI entrypoints from the already-loaded prebuilt lib. */
-static bool resolve_scanout_fns(DacReceiver* st) {
-    void* lib = dlopen("libvulkan_renderer.so", RTLD_NOW | RTLD_NOLOAD);
-    if (!lib) lib = dlopen("libvulkan_renderer.so", RTLD_NOW);
-    if (!lib) {
-        LOGE("resolve: dlopen(libvulkan_renderer.so) failed: %s", dlerror());
-        return false;
+/* AChoreographer frame callback — fires once per real panel vsync. Sends one
+ * MSG_VSYNC (carrying frameTimeNanos, CLOCK_MONOTONIC) to the Wine layer so it
+ * can phase-anchor vkWaitForPresentKHR on the actual vsync, then re-posts itself
+ * (Choreographer callbacks are one-shot). Ported 1:1 from Ludashi. */
+static void vsync_frame_callback(long frameTimeNanos, void* data) {
+    auto* st = reinterpret_cast<DacReceiver*>(data);
+    if (!st || !st->running.load(std::memory_order_relaxed)) return;
+    struct release_msg msg{};
+    msg.type = (uint8_t)MSG_VSYNC;
+    msg.slot_index = 0;
+    msg.release_fd = -1;
+    msg.displayed = 0;
+    msg.vsync_time_ns = (uint64_t)frameTimeNanos;
+    int fd = st->clientFd;
+    if (fd >= 0) (void)send(fd, &msg, sizeof(msg), MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (st->vsyncChoreographer)
+        AChoreographer_postFrameCallback(st->vsyncChoreographer, vsync_frame_callback, data);
+}
+
+/* Dedicated Looper thread hosting the AChoreographer callback stream. */
+static void* vsync_thread_func(void* arg) {
+    auto* st = reinterpret_cast<DacReceiver*>(arg);
+    st->vsyncLooper = ALooper_prepare(0);
+    if (!st->vsyncLooper) { LOGE("vsync thread: ALooper_prepare failed"); return nullptr; }
+    ALooper_acquire(st->vsyncLooper);
+    st->vsyncChoreographer = AChoreographer_getInstance();
+    if (!st->vsyncChoreographer) {
+        LOGE("vsync thread: AChoreographer_getInstance failed");
+        ALooper_release(st->vsyncLooper); st->vsyncLooper = nullptr; return nullptr;
     }
-    st->scanoutSetBuffer = (pfn_scanoutSetBuffer)dlsym(
-        lib, "Java_com_winlator_renderer_VulkanRenderer_nativeScanoutSetBuffer");
-    st->initScanout = (pfn_initScanout)dlsym(
-        lib, "Java_com_winlator_renderer_VulkanRenderer_nativeInitScanout");
-    if (!st->scanoutSetBuffer) {
-        LOGE("resolve: dlsym nativeScanoutSetBuffer failed: %s", dlerror());
-        return false;
+    AChoreographer_postFrameCallback(st->vsyncChoreographer, vsync_frame_callback, st);
+    LOGI("vsync thread: phase-lock started");
+    while (st->running.load(std::memory_order_relaxed)) {
+        int rc = ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
+        if (rc == ALOOPER_POLL_ERROR) { LOGE("vsync thread: pollOnce ERROR"); break; }
     }
-    /* initScanout is optional — log but don't fail if absent. */
-    if (!st->initScanout) LOGW("resolve: nativeInitScanout not found (continuing)");
-    return true;
+    ALooper_release(st->vsyncLooper);
+    st->vsyncLooper = nullptr;
+    st->vsyncChoreographer = nullptr;
+    LOGI("vsync thread exiting");
+    return nullptr;
 }
 
 static void* dac_recv_thread(void* arg) {
     auto* st = reinterpret_cast<DacReceiver*>(arg);
 
-    if (st->initScanout) st->initScanout(nullptr, nullptr, st->rendererHandle);
+    if (st->ctx) st->ctx->initScanout();
 
     /* Deferred-by-one-frame release for buffer safety (4-deep pool gives slack). */
     int prevSlot = -1;
+    uint64_t prevArriveUs = 0;   /* for frametime + jitter */
 
     while (st->running.load(std::memory_order_relaxed)) {
         struct present_msg pmsg;
@@ -149,6 +200,16 @@ static void* dac_recv_thread(void* arg) {
         }
         if (pmsg.type != MSG_PRESENT) continue;
 
+        /* T1 — frame arrival. Also update frametime/jitter EMAs. */
+        uint64_t arriveUs = mono_us();
+        if (prevArriveUs != 0) {
+            uint64_t ft = arriveUs - prevArriveUs;
+            uint64_t ftEma = ema_us(g_dacFrameTimeUs, ft);
+            uint64_t dev = (ft > ftEma) ? (ft - ftEma) : (ftEma - ft);
+            ema_us(g_dacJitterUs, dev);
+        }
+        prevArriveUs = arriveUs;
+
         int acquireFd = -1;
         struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
         if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
@@ -166,13 +227,14 @@ static void* dac_recv_thread(void* arg) {
         if (st->frameCount <= 5 || (st->frameCount % 120 == 0))
             LOGI("recv thread: frame=%ld slot=%u acquireFd=%d", st->frameCount, slot, acquireFd);
 
-        /* Forward to GameNative's scanout via the dlsym'd JNI entrypoint. It
-         * takes ownership of the fence fd (hands it to ASurfaceTransaction_setBuffer);
-         * SurfaceFlinger waits on it before scanning out. */
-        if (st->scanoutSetBuffer) {
-            st->scanoutSetBuffer(nullptr, nullptr, st->rendererHandle,
-                                 (jlong)(uintptr_t)st->slots[slot],
-                                 0, 0, st->width, st->height, acquireFd);
+        /* Forward to the renderer's scanout via a DIRECT C++ call (integrated —
+         * no dlsym). scanoutSetBuffer takes ownership of the fence fd (hands it
+         * to ASurfaceTransaction_setBuffer); SurfaceFlinger waits on it. */
+        if (st->ctx) {
+            st->ctx->scanoutSetBuffer(reinterpret_cast<AHardwareBuffer*>(st->slots[slot]),
+                                      0, 0, st->width, st->height, acquireFd);
+            /* True latency (arrival → SurfaceFlinger latch) is recorded by the
+             * renderer's onComplete callback in scanoutSetBuffer, not here. */
         } else if (acquireFd >= 0) {
             close(acquireFd);
         }
@@ -196,6 +258,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
     if (g_dacReceiver != nullptr) {
         LOGW("startPresentReceiver: receiver already running, stopping previous");
         g_dacReceiver->running.store(false, std::memory_order_relaxed);
+        if (g_dacReceiver->vsyncThreadStarted) {
+            if (g_dacReceiver->vsyncLooper) ALooper_wake(g_dacReceiver->vsyncLooper);
+            pthread_join(g_dacReceiver->vsyncThread, nullptr);
+        }
         if (g_dacReceiver->threadStarted) pthread_join(g_dacReceiver->thread, nullptr);
         delete g_dacReceiver;
         g_dacReceiver = nullptr;
@@ -203,7 +269,7 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
 
     auto* st = new DacReceiver();
     st->clientFd = (int)fd;
-    st->rendererHandle = handle;
+    st->ctx = reinterpret_cast<VulkanRendererContext*>(handle);
     st->width = (int)width;
     st->height = (int)height;
     st->slots[0] = reinterpret_cast<void*>(buf0);
@@ -212,11 +278,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
     st->slots[3] = reinterpret_cast<void*>(buf3);
     st->slotCount = (buf3 != 0) ? 4 : 3;
 
-    if (!resolve_scanout_fns(st)) {
-        LOGE("startPresentReceiver: could not resolve scanout entrypoints; aborting");
-        delete st;
-        return;
-    }
+    /* Reset metrics for the new session. */
+    g_dacLatencyUs.store(0, std::memory_order_relaxed);
+    g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
+    g_dacJitterUs.store(0, std::memory_order_relaxed);
 
     st->running.store(true, std::memory_order_relaxed);
     if (pthread_create(&st->thread, nullptr, dac_recv_thread, st) != 0) {
@@ -225,6 +290,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
         return;
     }
     st->threadStarted = true;
+    if (pthread_create(&st->vsyncThread, nullptr, vsync_thread_func, st) == 0)
+        st->vsyncThreadStarted = true;
+    else
+        LOGW("startPresentReceiver: vsync thread create failed (pacing degraded)");
     g_dacReceiver = st;
     LOGI("startPresentReceiver: started (fd=%d, slots=%d, %dx%d)",
          st->clientFd, st->slotCount, st->width, st->height);
@@ -240,8 +309,31 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStopPresentReceiver(
     g_dacReceiver = nullptr;
 
     st->running.store(false, std::memory_order_relaxed);
+    if (st->vsyncThreadStarted) {
+        if (st->vsyncLooper) ALooper_wake(st->vsyncLooper);
+        pthread_join(st->vsyncThread, nullptr);
+    }
     if (st->clientFd >= 0) shutdown(st->clientFd, SHUT_RDWR);
     if (st->threadStarted) pthread_join(st->thread, nullptr);
+    /* Clear metrics so the HUD falls back to native-mode timing after DAC stops. */
+    g_dacLatencyUs.store(0, std::memory_order_relaxed);
+    g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
+    g_dacJitterUs.store(0, std::memory_order_relaxed);
     LOGI("stopPresentReceiver: stopped");
     delete st;
+}
+
+/* ── HUD metric getters (DAC modes). Return 0 when DAC isn't delivering, so the
+ * Java side knows to fall back to native-mode (X11) timing. All in microseconds. */
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetDacLatencyUs(JNIEnv*, jobject) {
+    return (jlong)g_dacLatencyUs.load(std::memory_order_relaxed);
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetDacFrameTimeUs(JNIEnv*, jobject) {
+    return (jlong)g_dacFrameTimeUs.load(std::memory_order_relaxed);
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_winlator_renderer_VulkanRenderer_nativeGetDacJitterUs(JNIEnv*, jobject) {
+    return (jlong)g_dacJitterUs.load(std::memory_order_relaxed);
 }

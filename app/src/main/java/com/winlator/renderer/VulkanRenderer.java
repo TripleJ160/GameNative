@@ -185,6 +185,45 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         }
     }
 
+    // ── HUD performance metrics — DAC modes only ─────────────────────────────────
+    // Real compositor metrics measured in libdac.so (present-arrival → scanout
+    // submit): latency, frametime, jitter. Return 0 when DAC isn't delivering, so
+    // the HUD provider falls back to frameRating for native-mode FPS/frametime.
+    // (Native-mode latency/jitter are NOT exposed: GameNative's Vulkan renderer is
+    // a prebuilt blob with no per-frame callback and async scanout submit, so a
+    // Winlator-style native EMA isn't measurable from this layer.)
+    private native long nativeGetDacLatencyUs();
+    private native long nativeGetDacFrameTimeUs();
+    private native long nativeGetDacJitterUs();
+
+    private long safeDac(int which) {
+        try {
+            switch (which) {
+                case 0: return nativeGetDacLatencyUs();
+                case 1: return nativeGetDacFrameTimeUs();
+                default: return nativeGetDacJitterUs();
+            }
+        } catch (Throwable t) { return 0L; } // libdac not loaded
+    }
+
+    /** True if DAC is actively delivering frames (frametime EMA is live). */
+    public boolean isDacDelivering() { return safeDac(1) > 0; }
+
+    /** DAC-derived FPS (1e6 / frametime µs), or 0 when DAC isn't delivering. */
+    public float getDacFps() {
+        long ftUs = safeDac(1);
+        return ftUs > 0 ? 1_000_000f / ftUs : 0f;
+    }
+
+    /** DAC compositor submit latency in ms (0 when DAC isn't delivering). */
+    public float getDacLatencyMs() { return safeDac(0) / 1000f; }
+
+    /** DAC frametime in ms (0 when DAC isn't delivering). */
+    public float getDacFrameTimeMs() { return safeDac(1) / 1000f; }
+
+    /** DAC frametime jitter (mean abs deviation) in ms (0 when DAC isn't delivering). */
+    public float getDacJitterMs() { return safeDac(2) / 1000f; }
+
     /**
      * Detaches the scanout SurfaceControl layers on pause without tearing down the
      * AHB pool or Wine swapchain. Reuses GameNative's existing native detach path.

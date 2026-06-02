@@ -314,6 +314,8 @@
     <string name="performance_hud_metrics_description">Choose which stats appear in the overlay.</string>
     <string name="performance_hud_frame_rate">Frame rate</string>
     <string name="performance_hud_frame_rate_graph">FPS graph</string>
+    <string name="performance_hud_frame_time">Frametime + jitter</string>
+    <string name="performance_hud_latency">Latency (DAC/native)</string>
     <string name="performance_hud_cpu_usage">CPU usage</string>
     <string name="performance_hud_cpu_usage_graph">CPU graph</string>
     <string name="performance_hud_gpu_usage">GPU usage</string>
@@ -701,6 +703,7 @@
 
     <!-- Container Configuration: Graphics -->
     <string name="graphics_driver">Graphics Driver</string>
+    <string name="graphics_pipeline">Graphics Pipeline (DAC)</string>
     <string name="graphics_driver_version">Graphics Driver Version</string>
     <string name="exposed_vulkan_extensions">Exposed Vulkan Extensions</string>
     <string name="max_device_memory">Max Device Memory</string>

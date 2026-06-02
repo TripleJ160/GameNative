@@ -18,6 +18,7 @@ import app.gamenative.ui.component.settings.SettingsListDropdown
 import app.gamenative.ui.component.settings.SettingsMultiListDropdown
 import app.gamenative.ui.theme.settingsTileColors
 import app.gamenative.ui.theme.settingsTileColorsAlt
+import app.gamenative.utils.DacLayerManager
 import app.gamenative.utils.LsfgVkManager
 import com.alorma.compose.settings.ui.SettingsGroup
 import com.alorma.compose.settings.ui.SettingsSwitch
@@ -67,6 +68,23 @@ fun GraphicsTabContent(state: ContainerConfigState, default: Boolean = false) {
                     val cfg = KeyValueSet(config.graphicsDriverConfig)
                     cfg.put("version", selectedId.ifEmpty { state.wrapperOptions.labels[idx] })
                     state.config.value = config.copy(graphicsDriverConfig = cfg.toString())
+                },
+            )
+            // Bionic: DAC Graphics Pipeline (Direct Android Compositing).
+            // quality = direct-AHB zero-copy, performance = trojan-blit, native = DAC off.
+            val dacPipelineItems = listOf("Quality", "Performance", "Native (Off)")
+            val dacPipelineIds = listOf(
+                DacLayerManager.PIPELINE_QUALITY,
+                DacLayerManager.PIPELINE_PERFORMANCE,
+                DacLayerManager.PIPELINE_NATIVE,
+            )
+            SettingsListDropdown(
+                colors = settingsTileColors(),
+                title = { Text(text = stringResource(R.string.graphics_pipeline)) },
+                value = dacPipelineIds.indexOf(config.graphicsPipeline).coerceAtLeast(0),
+                items = dacPipelineItems,
+                onItemSelected = { idx ->
+                    state.config.value = config.copy(graphicsPipeline = dacPipelineIds[idx])
                 },
             )
             DxWrapperSection(state)

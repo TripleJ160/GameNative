@@ -251,6 +251,15 @@ private:
     void*  fnSTSetVisibility  = nullptr;
     void*  fnSTSetGeometry    = nullptr;
     void*  fnSTSetBackPressure = nullptr;
+    void*  fnSTSetOnComplete  = nullptr;   // DAC true-latency hook (API 29+)
+    void*  fnSTStatsLatchTime = nullptr;   // ASurfaceTransactionStats_getLatchTime
+    // Native (X11 swapchain) latency via VK_GOOGLE_display_timing
+    bool     displayTimingSupported = false;
+    void*    fnGetPastPresentationTimingGOOGLE = nullptr;
+    uint64_t nextPresentId = 1;
+    struct PresentStamp { uint64_t pid; uint64_t t1Us; };
+    PresentStamp presentRing[16] = {};
+    int      presentRingHead = 0;
     bool   loadScanoutApi();
 
     int32_t scanoutDstX=0, scanoutDstY=0, scanoutDstW=0, scanoutDstH=0;

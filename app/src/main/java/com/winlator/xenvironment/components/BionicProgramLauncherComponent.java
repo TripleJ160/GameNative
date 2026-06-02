@@ -193,12 +193,15 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         final int enabledPlayerCount = MAX_PLAYERS;
         for (int i = 0; i < enabledPlayerCount; i++) {
             String memPath;
+            // Use this install's real imagefs root (not a hardcoded app.gamenative
+            // path) so it works under any applicationId, e.g. the .dac test build.
+            String tmpDir = ImageFs.find(environment.getContext()).getRootDir().getPath() + "/tmp";
             if (i == 0) {
                 // Player 1 uses the original, non-numbered path that is known to work.
-                memPath = "/data/data/app.gamenative/files/imagefs/tmp/gamepad.mem";
+                memPath = tmpDir + "/gamepad.mem";
             } else {
                 // Players 2, 3, 4 use a 1-based index.
-                memPath = "/data/data/app.gamenative/files/imagefs/tmp/gamepad" + i + ".mem";
+                memPath = tmpDir + "/gamepad" + i + ".mem";
             }
 
             File memFile = new File(memPath);
@@ -345,9 +348,16 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         // container and injects its env vars when a DAC pipeline (quality/performance)
         // is selected on a wrapper/Turnip driver. applyLaunchEnv() always runs so it
         // can set DISABLE_AHB_LAYER + strip the manifest when DAC is off, keeping the
+        // evshim (the LD_PRELOADed input shim, native + non-rebuildable) otherwise
+        // falls back to a HARDCODED "/data/data/app.gamenative/files" base, which is
+        // wrong whenever the app runs under a different applicationId (e.g. the .dac
+        // test build → /data/data/app.gamenative.dac/...), breaking the gamepad_shm
+        // dir and thus controller input. Point it at this install's real files dir.
+        envVars.put("EVSHIM_BASE_PATH", imageFs.getRootDir().getParentFile().getPath());
+
         // layer dormant on non-DAC launches. See DacLayerManager.
         DacLayerManager.ensureRuntimeInstalled(environment.getContext(), container);
-        boolean dacArmed = DacLayerManager.applyLaunchEnv(container, envVars);
+        boolean dacArmed = DacLayerManager.applyLaunchEnv(environment.getContext(), container, envVars);
         Log.d("BionicProgramLauncherComponent", "DAC pipeline=" + DacLayerManager.pipeline(container)
                 + " armed=" + dacArmed);
 

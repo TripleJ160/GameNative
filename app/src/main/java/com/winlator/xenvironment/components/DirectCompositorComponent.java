@@ -7,19 +7,29 @@ import com.winlator.renderer.AHardwareBufferPool;
 import com.winlator.renderer.VulkanRenderer;
 import com.winlator.xenvironment.EnvironmentComponent;
 
+import java.util.function.Supplier;
+
 /**
  * Owns the {@link AHardwareBufferPool} and coordinates the Direct Android
- * Compositing (DAC) path lifecycle. Wired into {@code XEnvironment} as a peer of
- * the XServer component — starts before it so the pool is ready when the first
- * frame arrives. Ported from Winlator-Ludashi-Plus.
+ * Compositing (DAC) lifecycle. Ported from Winlator-Ludashi-Plus and adapted to
+ * GameNative.
  *
- * <p>This class has zero compile-time imports from {@code com.winlator.xserver.*}.
+ * <p>GameNative adaptation: the VulkanRenderer is created lazily (on SurfaceView
+ * ready) and is NOT an XEnvironment component, so it may not exist when this
+ * component starts. We therefore take a {@link Supplier} and resolve the
+ * renderer on demand. The pool is created at {@link #start()} (no renderer
+ * needed); the renderer is only required when Wine's WSI connects — by which
+ * time the surface (and renderer) is ready — to start the native present
+ * receiver. The Winlator-side renderer.setDirectCompositor/setAHBPool/
+ * detach/reattach calls are intentionally dropped: GameNative's recv-thread
+ * (libdac.so) drives scanout directly via dlsym and receives the pool buffers
+ * explicitly, so those renderer hooks are unused here.
  */
 public class DirectCompositorComponent extends EnvironmentComponent {
 
     private static final String LOG_TAG = "DirectCompositor";
 
-    private final VulkanRenderer renderer;
+    private final Supplier<VulkanRenderer> rendererSupplier;
     private final int poolSize;
     private final int screenWidth;
     private final int screenHeight;
@@ -27,26 +37,18 @@ public class DirectCompositorComponent extends EnvironmentComponent {
     private AHardwareBufferPool pool;
     private boolean active = false;
 
-    /**
-     * @param renderer     the VulkanRenderer that manages SurfaceControl layers
-     * @param poolSize     number of AHardwareBuffers to pre-allocate (typically 4)
-     * @param screenWidth  game screen width in pixels
-     * @param screenHeight game screen height in pixels
-     */
-    public DirectCompositorComponent(VulkanRenderer renderer, int poolSize,
+    public DirectCompositorComponent(Supplier<VulkanRenderer> rendererSupplier, int poolSize,
                                      int screenWidth, int screenHeight) {
-        this.renderer = renderer;
+        this.rendererSupplier = rendererSupplier;
         this.poolSize = poolSize;
         this.screenWidth = screenWidth;
         this.screenHeight = screenHeight;
     }
 
-    /**
-     * Convenience constructor that uses the default pool size of 4.
-     */
-    public DirectCompositorComponent(VulkanRenderer renderer,
+    /** Convenience constructor with the default pool size of 4. */
+    public DirectCompositorComponent(Supplier<VulkanRenderer> rendererSupplier,
                                      int screenWidth, int screenHeight) {
-        this(renderer, 4, screenWidth, screenHeight);
+        this(rendererSupplier, 4, screenWidth, screenHeight);
     }
 
     @Override
@@ -59,34 +61,18 @@ public class DirectCompositorComponent extends EnvironmentComponent {
 
         pool = new AHardwareBufferPool(screenWidth, screenHeight, poolSize);
         if (!pool.init()) {
-            Log.e(LOG_TAG, "start: AHardwareBufferPool.init() failed, falling back to XServer path");
+            Log.e(LOG_TAG, "start: AHardwareBufferPool.init() failed, DAC inactive");
             pool = null;
             return;
         }
-
-        renderer.setDirectCompositor(this);
-        renderer.setAHBPool(pool);
-        // NOTE: Do NOT call renderer.setNativeMode(true) here.
-        // nativeMode is for the legacy submitDirectFrame() path that's
-        // driven from Java when a single AHB is pushed per frame. The
-        // recv-thread DAC pipeline (the modern path) calls
-        // renderer->scanoutSetBuffer from C++ and never sets nativeMode.
-        // VulkanRenderer's surface-reattach logic uses isActive() on
-        // this component (in addition to nativeMode) to decide whether
-        // SCs need to be recreated after lock/unlock, so the flag below
-        // doubles as the recv-thread DAC's "I'm active" signal.
         active = true;
-        Log.i(LOG_TAG, "start: pool ready (pool=" + poolSize
-                + ", " + screenWidth + "x" + screenHeight
-                + "), waiting for Wine WSI to deliver first frame");
+        Log.i(LOG_TAG, "start: pool ready (pool=" + poolSize + ", " + screenWidth + "x" + screenHeight
+                + "), waiting for Wine WSI to connect to the AHB socket");
     }
 
     @Override
     public void stop() {
         active = false;
-        renderer.setNativeMode(false);
-        renderer.setDirectCompositor(null);
-        renderer.setAHBPool(null);
         if (pool != null) {
             pool.destroy();
             pool = null;
@@ -94,73 +80,14 @@ public class DirectCompositorComponent extends EnvironmentComponent {
         Log.i(LOG_TAG, "stop: direct compositing deactivated");
     }
 
-    /**
-     * Called by VulkanRenderer when SurfaceControl creation fails.
-     * Deactivates the direct compositing path so the XServer path is used.
-     */
-    public void onScanoutFallback() {
-        if (!active) return;
-        active = false;
-        renderer.setAHBPool(null);
-        if (pool != null) {
-            pool.destroy();
-            pool = null;
-        }
-        Log.w(LOG_TAG, "onScanoutFallback: SurfaceControl failed, falling back to XServer path");
-    }
-
-    /**
-     * Reinitializes the AHardwareBuffer pool. Called when the Vulkan context is
-     * lost and must be fully recreated (e.g., nativeReattachSurface returns false).
-     *
-     * @return true if the pool was successfully reinitialized
-     */
-    public boolean reinitPool() {
-        renderer.setAHBPool(null);
-        if (pool != null) {
-            pool.destroy();
-            pool = null;
-        }
-        pool = new AHardwareBufferPool(screenWidth, screenHeight, poolSize);
-        if (!pool.init()) {
-            Log.e(LOG_TAG, "reinitPool: AHardwareBufferPool.init() failed");
-            active = false;
-            return false;
-        }
-        renderer.setAHBPool(pool);
-        Log.i(LOG_TAG, "reinitPool: pool reinitialized successfully");
-        return true;
-    }
-
-    /**
-     * Called when the app is sent to the background. Detaches SurfaceControl layers
-     * without destroying the AHB pool or Wine swapchain. Wine naturally blocks in
-     * {@code acquire()} while paused since no release fences will arrive.
-     */
-    public void onPause() {
-        if (!active) return;
-        renderer.detachScanoutLayers();
-        Log.i(LOG_TAG, "onPause: SC layers detached, pool and swapchain preserved");
-    }
-
-    /**
-     * Called when the app returns to the foreground. Reattaches SurfaceControl layers
-     * and resumes frame submission without requiring Wine to recreate the swapchain.
-     */
-    public void onResume() {
-        if (!active) return;
-        renderer.reattachScanoutLayers();
-        Log.i(LOG_TAG, "onResume: SC layers reattached, frame submission resumed");
-    }
-
     /** Returns the AHardwareBufferPool, or {@code null} if not active. */
     public AHardwareBufferPool getPool() {
         return pool;
     }
 
-    /** Returns the VulkanRenderer for frame submission. */
+    /** Resolves the VulkanRenderer on demand (null until the surface is ready). */
     public VulkanRenderer getRenderer() {
-        return renderer;
+        return rendererSupplier != null ? rendererSupplier.get() : null;
     }
 
     /** Returns {@code true} if the direct compositing path is active. */

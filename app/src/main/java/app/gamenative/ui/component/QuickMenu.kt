@@ -968,6 +968,26 @@ private fun PerformanceHudQuickMenuTab(
             accentColor = accentColor,
         )
         QuickMenuToggleRow(
+            title = stringResource(R.string.performance_hud_frame_time),
+            enabled = performanceHudConfig.showFrameTime,
+            onToggle = {
+                onPerformanceHudConfigChanged(
+                    performanceHudConfig.copy(showFrameTime = !performanceHudConfig.showFrameTime),
+                )
+            },
+            accentColor = accentColor,
+        )
+        QuickMenuToggleRow(
+            title = stringResource(R.string.performance_hud_latency),
+            enabled = performanceHudConfig.showLatency,
+            onToggle = {
+                onPerformanceHudConfigChanged(
+                    performanceHudConfig.copy(showLatency = !performanceHudConfig.showLatency),
+                )
+            },
+            accentColor = accentColor,
+        )
+        QuickMenuToggleRow(
             title = stringResource(R.string.performance_hud_cpu_usage),
             enabled = performanceHudConfig.showCpuUsage,
             onToggle = {

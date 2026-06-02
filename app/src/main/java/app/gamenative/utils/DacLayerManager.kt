@@ -5,6 +5,7 @@ import com.winlator.container.Container
 import com.winlator.core.FileUtils
 import com.winlator.core.envvars.EnvVars
 import com.winlator.xconnector.UnixSocketConfig
+import com.winlator.xenvironment.ImageFs
 import java.io.File
 import timber.log.Timber
 import kotlin.jvm.JvmStatic
@@ -38,8 +39,12 @@ object DacLayerManager {
     const val PIPELINE_QUALITY = "quality"
     const val PIPELINE_PERFORMANCE = "performance"
     const val PIPELINE_NATIVE = "native"
-    // DAC is opt-in on this fork: existing containers keep their current
-    // (X11/Vortek/native) behaviour until the user selects a DAC pipeline.
+    // TESTING DEFAULT: Quality so that a wrapper/Turnip-driver container auto-arms
+    // DAC without the (not-yet-built) Graphics Pipeline UI. Vortek/virgl containers
+    // are unaffected (isSupported() gates on the wrapper driver). Revert to
+    // PIPELINE_NATIVE once the UI lands so DAC is explicit opt-in.
+    // DAC is explicit opt-in: containers default to NATIVE (DAC off) and the user
+    // selects Quality/Performance in the container's Graphics tab (GraphicsTab.kt).
     const val DEFAULT_PIPELINE = PIPELINE_NATIVE
 
     // Paths inside the container's HOME (relative to rootDir)
@@ -158,7 +163,7 @@ object DacLayerManager {
      * @return true if a DAC pipeline is armed and env vars were applied.
      */
     @JvmStatic
-    fun applyLaunchEnv(container: Container, envVars: EnvVars): Boolean {
+    fun applyLaunchEnv(context: Context, container: Container, envVars: EnvVars): Boolean {
         // Clear stale DAC vars first
         envVars.remove(ENV_ENABLE)
         envVars.remove(ENV_DISABLE)
@@ -177,8 +182,15 @@ object DacLayerManager {
         val directRender = if (pipeline(container) == PIPELINE_QUALITY) "1" else "0"
         envVars.put(ENV_ENABLE, "1")
         envVars.put(ENV_DIRECT_RENDER, directRender)
-        // Guest sees the socket at the absolute container path (bionic = real fs).
-        envVars.put(ENV_AHB_SERVER, File(container.rootDir, UnixSocketConfig.AHB_SERVER_PATH).absolutePath)
+        // The AHB server (AHBSocketServerComponent) binds under the IMAGEFS ROOT —
+        // createSocket(imageFs.rootDir, AHB_SERVER_PATH) → <imagefs>/tmp/.ahb/AHB0 —
+        // NOT under container.rootDir (the per-game home, .../imagefs/home/xuser-*).
+        // The guest layer does a literal connect(getenv("ANDROID_AHB_SERVER")), and
+        // the bionic redirect passes /data/.../imagefs/* host paths through unchanged,
+        // so both sides must use the identical imagefs-rooted host path. This mirrors
+        // the working Winlator fork (rootDir.getPath() + AHB_SOCKET_PATH).
+        val imagefsRoot = ImageFs.find(context).rootDir
+        envVars.put(ENV_AHB_SERVER, File(imagefsRoot, UnixSocketConfig.AHB_SERVER_PATH).absolutePath)
 
         // Implicit layer is auto-discovered, but set VK_INSTANCE_LAYERS too to
         // match the reference fork's explicit enablement.
