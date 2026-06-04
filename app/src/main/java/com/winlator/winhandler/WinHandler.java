@@ -557,7 +557,7 @@ public class WinHandler {
             Context context = activity.getApplicationContext();
             File gamepadShmDir = new File(
                     context.getFilesDir(),
-                    "imagefs/gamepad_shm"
+                    "gamepad_shm"
             );
 
             if (!gamepadShmDir.exists() && !gamepadShmDir.mkdirs()) {
