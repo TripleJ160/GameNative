@@ -63,6 +63,34 @@ object DacLayerManager {
     private const val ENV_DIRECT_RENDER = "WINLATOR_AHB_DIRECT_RENDER"
     private const val LAYER_NAME = "VK_LAYER_WINLATOR_ahb_direct"
 
+    // ── Forward-compat WSI extension gating (Option 1, SURGICAL) ────────────
+    // DAC bypasses the real vkQueuePresentKHR. The layer ALREADY mirrors DXVK's
+    // present-wait contract correctly: it intercepts vkWaitForPresentKHR (v1) and
+    // satisfies it via the phase-anchored vsync sleep — this is exactly how the
+    // working FIFO titles (Vampire Survivors) pace. So we must NOT gate
+    // present_wait/present_id v1: doing so (a) forces DXVK off the path we handle
+    // and onto a fence-based throttle that DEADLOCKS under the bypass, and (b)
+    // disables the layer's own WFP interception (it loads vkWaitForPresentKHR by
+    // name → "extension absent" → no pacing hook). Verified on-device: gating v1
+    // froze the spinning-cube test after 4 frames in vkWaitForFences(UINT64_MAX).
+    //
+    // What we DO gate = only the parts the layer does NOT mirror:
+    //   - present_wait2 / present_id2 (the per-surface variants DXVK is migrating
+    //     to; our interception only covers v1, so hide v2 until we implement it,
+    //     forcing DXVK to keep using v1 which we handle). No-op on DXVK <= 2.7.1.
+    //   - swapchain_maintenance1 (EXT+KHR): the 2.6 swapchain rework; gating it
+    //     makes DXVK use the plain recreate path, avoiding the deferred
+    //     apply-at-acquireNextImage behavior a CreateSwapchain-intercepting layer
+    //     can mishandle. Harmless fallback (DXVK recreates on vsync toggle).
+    // Consumed by the wrapper ICD via WRAPPER_EXTENSION_BLACKLIST (comma-sep).
+    // See project memory + the 2026-06 DXVK/DAC research note.
+    private val DAC_GATED_EXTENSIONS = listOf(
+        "VK_KHR_present_id2",
+        "VK_KHR_present_wait2",
+        "VK_EXT_swapchain_maintenance1",
+        "VK_KHR_swapchain_maintenance1",
+    )
+
     // Bumped when the bundled .so changes (forces re-copy into containers)
     private const val RUNTIME_VERSION = "v1.0.0-android-arm64-v8a"
 
@@ -192,6 +220,49 @@ object DacLayerManager {
         val imagefsRoot = ImageFs.find(context).rootDir
         envVars.put(ENV_AHB_SERVER, File(imagefsRoot, UnixSocketConfig.AHB_SERVER_PATH).absolutePath)
 
+        // ── FORWARD-COMPAT WSI EXTENSION GATING (Option 1, SURGICAL) ────────
+        // Keep present_wait/present_id v1 (the layer intercepts vkWaitForPresentKHR
+        // and paces correctly — do NOT disable it) and only hide the variants the
+        // layer doesn't mirror (DAC_GATED_EXTENSIONS: present_*2 + swapchain_
+        // maintenance1). Crucially we do NOT set WRAPPER_DISABLE_PRESENT_WAIT — the
+        // earlier full gating set it to 1, which disabled the layer's WFP hook and
+        // froze games in vkWaitForFences. We MERGE with any user-set blacklist
+        // (XServerScreen already put the container's value into envVars before this
+        // runs — BionicProgramLauncherComponent does envVars.putAll(this.envVars)
+        // then applyLaunchEnv), so we never clobber it.
+        // A/B escape hatch: marker <externalFiles>/.ahb_no_gating disables ALL of
+        // this (toggle via adb, no rebuild) to compare against ungated DAC.
+        val noGating = File(context.getExternalFilesDir(null), ".ahb_no_gating").exists()
+        if (noGating) {
+            Timber.tag(TAG).w("DAC DIAG: .ahb_no_gating present — skipping WSI extension-gating")
+        } else {
+            val existingBlacklist = (envVars["WRAPPER_EXTENSION_BLACKLIST"] ?: "")
+                .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            val mergedBlacklist = (existingBlacklist + DAC_GATED_EXTENSIONS).distinct()
+            envVars.put("WRAPPER_EXTENSION_BLACKLIST", mergedBlacklist.joinToString(","))
+            Timber.tag(TAG).i("DAC extension-gating (surgical, present_wait kept): blacklist=[%s]",
+                mergedBlacklist.joinToString(","))
+        }
+
+        // ── DIAGNOSTIC TOGGLE (no rebuild needed) ───────────────────────────
+        // If the marker file <externalFiles>/.ahb_no_intercept exists, pass
+        // WINLATOR_AHB_NO_INTERCEPT=1 to the guest layer so it loads + connects
+        // the AHB socket but DECLINES to hook any swapchain (pure X11 passthrough
+        // with the layer still present). Used to isolate whether a game's hang is
+        // caused by the layer's swapchain interception / scanout mode vs the DAC
+        // X-server lifecycle itself. The app's external files dir is used because
+        // it's adb-writable (no root, app not debuggable) AND app-readable.
+        // Toggle with:
+        //   adb shell touch /sdcard/Android/data/app.gamenative/files/.ahb_no_intercept   (enable)
+        //   adb shell rm    /sdcard/Android/data/app.gamenative/files/.ahb_no_intercept   (disable)
+        val noInterceptMarker = File(context.getExternalFilesDir(null), ".ahb_no_intercept")
+        if (noInterceptMarker.exists()) {
+            envVars.put("WINLATOR_AHB_NO_INTERCEPT", "1")
+            Timber.tag(TAG).w("DAC DIAG: WINLATOR_AHB_NO_INTERCEPT=1 (marker present; layer will NOT hook swapchains)")
+        } else {
+            envVars.remove("WINLATOR_AHB_NO_INTERCEPT")
+        }
+
         // Implicit layer is auto-discovered, but set VK_INSTANCE_LAYERS too to
         // match the reference fork's explicit enablement.
         val existingInstanceLayers = envVars[ENV_INSTANCE_LAYERS] ?: ""
@@ -208,6 +279,20 @@ object DacLayerManager {
             envVars.put("VK_LAYER_PATH", containerLayerDir.absolutePath)
 
         Timber.tag(TAG).i("DAC armed: pipeline=%s, directRender=%s", pipeline(container), directRender)
+
+        // ── DIAGNOSTIC: DAC + LSFG-VK co-existence ──────────────────────────
+        // Both are swapchain-intercepting implicit Vulkan layers (both hook
+        // vkCreateSwapchainKHR / vkQueuePresentKHR). When both are armed, turn on
+        // the Vulkan loader's layer-chain logging and dump the resolved layer env
+        // so we can see in logcat which layer ends up above the other and whether
+        // one is effectively dropped. Remove once the interaction is understood.
+        if (LsfgVkManager.isArmed(container)) {
+            envVars.put("VK_LOADER_DEBUG", "all")
+            Timber.tag(TAG).w("DAC_LSFG_DIAG: BOTH ARMED (DAC pipeline=%s + LSFG mult=%d) — layer-chain conflict diag on",
+                pipeline(container), LsfgVkManager.multiplier(container))
+            Timber.tag(TAG).w("DAC_LSFG_DIAG: VK_INSTANCE_LAYERS=%s", envVars[ENV_INSTANCE_LAYERS] ?: "(unset)")
+            Timber.tag(TAG).w("DAC_LSFG_DIAG: VK_LAYER_PATH=%s", envVars["VK_LAYER_PATH"] ?: "(unset)")
+        }
         return true
     }
 

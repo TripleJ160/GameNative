@@ -3107,17 +3107,37 @@ private fun setupXEnvironment(
     val enableWineDebug = PrefManager.enableWineDebug
     val enableBox86Logs = WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)
     val wineDebugChannels = PrefManager.wineDebugChannels
-    // explicitly enable or disable Wine debug channels
+    // ── DIAGNOSTIC MARKER (no rebuild needed) ───────────────────────────────
+    // If <externalFiles>/.wine_debug exists, force a focused WINEDEBUG channel
+    // set + file capture, regardless of user prefs. Used to pinpoint where wine
+    // parks (e.g. DXVK D3D9 surface/swapchain setup under DAC). Channels chosen
+    // to show the last Vulkan/window/exception call before a hang without the
+    // firehose of +relay. Captured to <externalFiles>/wine_logs/wine_debug.log,
+    // which is adb-readable and survives the logcat ring being flushed.
+    // Toggle:  adb shell touch /sdcard/Android/data/app.gamenative/files/.wine_debug
+    //          adb shell rm    /sdcard/Android/data/app.gamenative/files/.wine_debug
+    val wineDebugMarkerFile = File(context.getExternalFilesDir(null), ".wine_debug")
+    val wineDebugMarker = wineDebugMarkerFile.exists()
+    // If the marker file has CONTENT, use it verbatim as WINEDEBUG (lets us tune
+    // channels via `adb shell echo ... > .wine_debug` with no rebuild). Empty
+    // marker → a sane default. NOTE: +seh is deliberately NOT in the default —
+    // on a faulting init it makes wine's backtrace generator loop and write
+    // multi-GB logs; add it explicitly via the marker only if you want the
+    // exception unwind trail.
+    val markerChannels = if (wineDebugMarker) wineDebugMarkerFile.readText().trim() else ""
     envVars.put(
         "WINEDEBUG",
-        if (enableWineDebug && wineDebugChannels.isNotEmpty())
-            "+" + wineDebugChannels.replace(",", ",+")
-        else
-            "-all",
+        when {
+            wineDebugMarker && markerChannels.isNotEmpty() -> markerChannels
+            wineDebugMarker -> "+timestamp,+tid,+vulkan,+win"
+            enableWineDebug && wineDebugChannels.isNotEmpty() ->
+                "+" + wineDebugChannels.replace(",", ",+")
+            else -> "-all"
+        },
     )
-    // capture debug output to file if either Wine or Box86/64 logging is enabled
+    // capture debug output to file if Wine/Box86/64 logging or the marker is on
     var logFile: File? = null
-    val captureLogs = enableWineDebug || enableBox86Logs
+    val captureLogs = enableWineDebug || enableBox86Logs || wineDebugMarker
     if (captureLogs) {
         val wineLogDir = File(context.getExternalFilesDir(null), "wine_logs")
         wineLogDir.mkdirs()

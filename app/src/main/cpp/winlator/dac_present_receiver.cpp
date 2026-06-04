@@ -27,10 +27,12 @@
 #include <errno.h>
 #include <cstring>
 #include <atomic>
+#include <mutex>
 #include <time.h>
 #include <sys/socket.h>
 #include <android/choreographer.h>
 #include <android/looper.h>
+#include <android/hardware_buffer.h>
 #include "VulkanRendererContext.h"
 
 #define LOG_TAG "DAC_Receiver"
@@ -41,6 +43,17 @@
 #define MSG_PRESENT 1
 #define MSG_RELEASE 2
 #define MSG_VSYNC   6   /* Android → Wine: real panel vsync (AChoreographer) */
+#define MSG_REALLOC     8  /* Wine → Android: reallocate the AHB pool to a new
+                            * resolution/count (dynamic pool — compatibility).
+                            * Overloads present_msg: slot_index=width,
+                            * dst_x=height, dst_y=count (same wire size). */
+#define MSG_REALLOC_ACK 9  /* Android → Wine: pool reallocated; N handles follow.
+                            * Overloads release_msg: slot_index=count. */
+
+/* AHB pool format/usage — MUST match AHardwareBufferPool (BGRA_8888 + GPU
+ * color-output | sampled | composer-overlay) so the guest imports identically. */
+#define DAC_AHB_FORMAT 5            /* HAL_PIXEL_FORMAT_BGRA_8888 */
+#define DAC_AHB_USAGE  0xB00ULL     /* 0x200 | 0x100 | 0x800 */
 
 /* Wire layout — MUST match the Wine-side AHB layer (dlls/wineandroid.drv). */
 struct present_msg {
@@ -77,6 +90,19 @@ struct DacReceiver {
     bool vsyncThreadStarted = false;
     ALooper* vsyncLooper = nullptr;
     AChoreographer* vsyncChoreographer = nullptr;
+    std::atomic<bool> vsyncPaused{false};   /* gate vsync sends during realloc */
+    // Serializes ALL socket sends (vsync, release, and the realloc ACK+handle
+    // batch). The realloc batch carries SCM_RIGHTS file descriptors via
+    // AHardwareBuffer_sendHandleToUnixSocket; if any other send interleaves
+    // between the ACK and a handle, the guest's recvHandleFromUnixSocket
+    // desyncs and parses a stray message's bytes as a descriptor. vsyncPaused
+    // is the fast-path gate; this mutex closes the TOCTOU window where a vsync
+    // send already passed the gate check before realloc began.
+    std::mutex sendMtx;
+    // Dynamic pool: true once we've reallocated to native-owned AHBs (so we
+    // free them on the next realloc / on stop). The INITIAL slots come from the
+    // Java AHardwareBufferPool and are owned/freed by Java — we never free those.
+    bool slotsNativeOwned = false;
 };
 
 static DacReceiver* g_dacReceiver = nullptr;
@@ -112,15 +138,16 @@ static inline uint64_t ema_us(std::atomic<uint64_t>& acc, uint64_t sample) {
 extern "C" uint64_t dac_now_us() { return mono_us(); }
 extern "C" void dac_record_true_latency(uint64_t latencyUs) { ema_us(g_dacLatencyUs, latencyUs); }
 
-static void send_release(int fd, uint32_t slot, uint8_t displayed) {
-    if (fd < 0) return;
+static void send_release(DacReceiver* st, uint32_t slot, uint8_t displayed) {
+    if (!st || st->clientFd < 0) return;
     struct release_msg rel{};
     rel.type = (uint8_t)MSG_RELEASE;
     rel.slot_index = slot;
     rel.release_fd = -1;
     rel.displayed = displayed;
     rel.vsync_time_ns = 0;
-    send(fd, &rel, sizeof(rel), MSG_NOSIGNAL);
+    std::lock_guard<std::mutex> lk(st->sendMtx);
+    send(st->clientFd, &rel, sizeof(rel), MSG_NOSIGNAL);
 }
 
 /* AChoreographer frame callback — fires once per real panel vsync. Sends one
@@ -137,7 +164,15 @@ static void vsync_frame_callback(long frameTimeNanos, void* data) {
     msg.displayed = 0;
     msg.vsync_time_ns = (uint64_t)frameTimeNanos;
     int fd = st->clientFd;
-    if (fd >= 0) (void)send(fd, &msg, sizeof(msg), MSG_NOSIGNAL | MSG_DONTWAIT);
+    // Don't inject MSG_VSYNC into the stream while a realloc handshake is in
+    // flight — the ACK + handle batch must reach the guest contiguously.
+    if (fd >= 0 && !st->vsyncPaused.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lk(st->sendMtx);
+        // Re-check under the lock: realloc may have started between the gate
+        // check and acquiring the mutex.
+        if (!st->vsyncPaused.load(std::memory_order_acquire))
+            (void)send(fd, &msg, sizeof(msg), MSG_NOSIGNAL | MSG_DONTWAIT);
+    }
     if (st->vsyncChoreographer)
         AChoreographer_postFrameCallback(st->vsyncChoreographer, vsync_frame_callback, data);
 }
@@ -166,12 +201,101 @@ static void* vsync_thread_func(void* arg) {
     return nullptr;
 }
 
+/* Dynamic pool: the guest hit a swapchain whose resolution/count the current
+ * pool can't serve. Free the old (native-owned) buffers, allocate `count` new
+ * AHBs at width×height (BGRA, same usage as the Java pool), and ship them back
+ * so the guest can hook instead of falling back to passthrough. The vsync sender
+ * is paused so the ACK + handle batch reach the guest contiguously. */
+static void realloc_pool(DacReceiver* st, uint32_t width, uint32_t height, uint32_t count) {
+    if (count < 1) count = 1;
+    if (count > DAC_MAX_SLOTS) count = DAC_MAX_SLOTS;
+    LOGI("realloc_pool: request %ux%u count=%u (was %dx%d count=%d)",
+         width, height, count, st->width, st->height, st->slotCount);
+
+    st->vsyncPaused.store(true, std::memory_order_release);
+
+    /* Free the previous native-allocated buffers (never the initial Java pool). */
+    if (st->slotsNativeOwned) {
+        for (int i = 0; i < st->slotCount; i++) {
+            if (st->slots[i]) AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(st->slots[i]));
+            st->slots[i] = nullptr;
+        }
+    }
+
+    /* Allocate the new pool. */
+    AHardwareBuffer* newbufs[DAC_MAX_SLOTS] = {nullptr};
+    uint32_t allocated = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        AHardwareBuffer_Desc desc = {};
+        desc.width  = width;
+        desc.height = height;
+        desc.layers = 1;
+        desc.format = DAC_AHB_FORMAT;
+        desc.usage  = DAC_AHB_USAGE;
+        if (AHardwareBuffer_allocate(&desc, &newbufs[i]) != 0 || !newbufs[i]) {
+            LOGE("realloc_pool: AHardwareBuffer_allocate failed at %u (%ux%u)", i, width, height);
+            break;
+        }
+        allocated++;
+    }
+    if (allocated < count) {
+        /* Partial failure — roll back and tell the guest to keep passthrough. */
+        for (uint32_t i = 0; i < allocated; i++) AHardwareBuffer_release(newbufs[i]);
+        struct release_msg ack{};
+        ack.type = (uint8_t)MSG_REALLOC_ACK;
+        ack.slot_index = 0;            /* count=0 → guest stays on passthrough */
+        { std::lock_guard<std::mutex> lk(st->sendMtx);
+          send(st->clientFd, &ack, sizeof(ack), MSG_NOSIGNAL); }
+        st->vsyncPaused.store(false, std::memory_order_release);
+        LOGE("realloc_pool: alloc failed; signalled passthrough");
+        return;
+    }
+
+    /* ACK with the count, then ship the handles contiguously. The whole batch
+     * is sent under sendMtx so no vsync/release send can split the ACK from its
+     * handles (which would desync the guest's SCM_RIGHTS recv). vsyncPaused is
+     * already set, but the mutex also covers the in-flight-vsync TOCTOU. */
+    {
+        std::lock_guard<std::mutex> lk(st->sendMtx);
+        struct release_msg ack{};
+        ack.type = (uint8_t)MSG_REALLOC_ACK;
+        ack.slot_index = count;
+        send(st->clientFd, &ack, sizeof(ack), MSG_NOSIGNAL);
+        for (uint32_t i = 0; i < count; i++) {
+            if (AHardwareBuffer_sendHandleToUnixSocket(newbufs[i], st->clientFd) != 0)
+                LOGE("realloc_pool: sendHandle failed at %u", i);
+        }
+    }
+
+    /* Adopt the new pool. */
+    for (uint32_t i = 0; i < count; i++) st->slots[i] = newbufs[i];
+    for (uint32_t i = count; i < DAC_MAX_SLOTS; i++) st->slots[i] = nullptr;
+    st->slotCount = (int)count;
+    st->width  = (int)width;
+    st->height = (int)height;
+    st->slotsNativeOwned = true;
+
+    g_dacLatencyUs.store(0, std::memory_order_relaxed);
+    g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
+    g_dacJitterUs.store(0, std::memory_order_relaxed);
+
+    st->vsyncPaused.store(false, std::memory_order_release);
+    LOGI("realloc_pool: now %ux%u count=%u (native-owned)", width, height, count);
+}
+
 static void* dac_recv_thread(void* arg) {
     auto* st = reinterpret_cast<DacReceiver*>(arg);
 
-    if (st->ctx) st->ctx->initScanout();
-
-    /* Deferred-by-one-frame release for buffer safety (4-deep pool gives slack). */
+    /* NOTE: scanout is initialized LAZILY on the first MSG_PRESENT (below), NOT
+     * here at connect/device-create time. Engaging scanout immediately flips the
+     * GameNative X-server into scanout mode while the guest game is still
+     * creating/realizing its Win32 window. Some games (e.g. NFS Most Wanted,
+     * D3D11) block forever in window creation when that happens — they wait on a
+     * show/activate/X round-trip that scanout mode disturbs. Deferring scanout
+     * until the game actually presents its first frame keeps the normal X11
+     * window path intact during game-window setup, then flips to DAC once frames
+     * are flowing. Broforce/Vampire Survivors present almost immediately so they
+     * are unaffected. */
     int prevSlot = -1;
     uint64_t prevArriveUs = 0;   /* for frametime + jitter */
 
@@ -196,6 +320,11 @@ static void* dac_recv_thread(void* arg) {
         }
         if ((size_t)ret < sizeof(pmsg)) {
             LOGE("recv thread: short read (%zd < %zu)", ret, sizeof(pmsg));
+            continue;
+        }
+        if (pmsg.type == MSG_REALLOC) {
+            /* Overloaded present_msg: slot_index=width, dst_x=height, dst_y=count. */
+            realloc_pool(st, pmsg.slot_index, (uint32_t)pmsg.dst_x, (uint32_t)pmsg.dst_y);
             continue;
         }
         if (pmsg.type != MSG_PRESENT) continue;
@@ -231,6 +360,10 @@ static void* dac_recv_thread(void* arg) {
          * no dlsym). scanoutSetBuffer takes ownership of the fence fd (hands it
          * to ASurfaceTransaction_setBuffer); SurfaceFlinger waits on it. */
         if (st->ctx) {
+            /* Lazy scanout init on the first frame (idempotent — returns early
+             * if already active). This is the deferral described at thread top:
+             * scanout engages only once the game is actually presenting. */
+            st->ctx->initScanout();
             st->ctx->scanoutSetBuffer(reinterpret_cast<AHardwareBuffer*>(st->slots[slot]),
                                       0, 0, st->width, st->height, acquireFd);
             /* True latency (arrival → SurfaceFlinger latch) is recorded by the
@@ -239,11 +372,11 @@ static void* dac_recv_thread(void* arg) {
             close(acquireFd);
         }
 
-        if (prevSlot >= 0) send_release(st->clientFd, (uint32_t)prevSlot, 1);
+        if (prevSlot >= 0) send_release(st, (uint32_t)prevSlot, 1);
         prevSlot = (int)slot;
     }
 
-    if (prevSlot >= 0) send_release(st->clientFd, (uint32_t)prevSlot, 1);
+    if (prevSlot >= 0) send_release(st, (uint32_t)prevSlot, 1);
     LOGI("recv thread: exiting (frames=%ld)", st->frameCount);
     return nullptr;
 }
@@ -263,6 +396,11 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
             pthread_join(g_dacReceiver->vsyncThread, nullptr);
         }
         if (g_dacReceiver->threadStarted) pthread_join(g_dacReceiver->thread, nullptr);
+        if (g_dacReceiver->slotsNativeOwned) {
+            for (int i = 0; i < g_dacReceiver->slotCount; i++)
+                if (g_dacReceiver->slots[i])
+                    AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(g_dacReceiver->slots[i]));
+        }
         delete g_dacReceiver;
         g_dacReceiver = nullptr;
     }
@@ -319,6 +457,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStopPresentReceiver(
     g_dacLatencyUs.store(0, std::memory_order_relaxed);
     g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
     g_dacJitterUs.store(0, std::memory_order_relaxed);
+    if (st->slotsNativeOwned) {
+        for (int i = 0; i < st->slotCount; i++)
+            if (st->slots[i]) AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(st->slots[i]));
+    }
     LOGI("stopPresentReceiver: stopped");
     delete st;
 }

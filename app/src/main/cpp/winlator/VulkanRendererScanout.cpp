@@ -187,9 +187,16 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
 
     void* t = scanoutGameTx;
 
+    // SOURCE rect = the actual buffer content (in buffer pixels). With the
+    // dynamic AHB pool the buffer may be smaller than the container (e.g. GTA4
+    // renders a 640x400 D3D9 swapchain that the receiver realloc'd the pool to),
+    // so the crop MUST be the buffer's real w/h — using containerWidth here
+    // would read past the buffer and show black. setGeometry then SCALES this
+    // source up to the on-screen destination below. When buffer==container
+    // (the common case) this is identical to the old behaviour.
+    ARect src{0, 0, w, h};
     int32_t cw = containerWidth  > 0 ? containerWidth  : w;
     int32_t ch = containerHeight > 0 ? containerHeight : h;
-    ARect src{0, 0, cw, ch};
     ARect dst = (scanoutDstW > 0)
         ? ARect{scanoutDstX, scanoutDstY, scanoutDstX+scanoutDstW, scanoutDstY+scanoutDstH}
         : ARect{0, 0, cw, ch};
