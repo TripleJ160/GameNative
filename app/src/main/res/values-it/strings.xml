@@ -1494,4 +1494,25 @@
     <string name="frontend_sync_confirm_keep">Mantieni</string>
     <string name="frontend_sync_resync_all">Risincronizza tutto</string>
     <string name="frontend_sync_resync_complete">Sincronizzazione frontend completata</string>
+    <string name="screen_effects_scaling">Ridimensionamento</string>
+    <string name="screen_effects_upscaling">Super risoluzione</string>
+    <string name="screen_effects_basic_scaling">Ridimensionamento di base</string>
+    <string name="screen_effects_scaling_mode_none">Nessun ridimensionamento</string>
+    <string name="screen_effects_scaling_mode_none_desc">Nessun ridimensionamento.</string>
+    <string name="screen_effects_scaling_mode_nearest">Più vicino</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Pixel nitidi (retrò).</string>
+    <string name="screen_effects_scaling_mode_linear">Lineare</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Ridimensionamento morbido.</string>
+    <string name="screen_effects_scaling_mode_fill">Riempi</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Riempie lo schermo, ritaglia i bordi.</string>
+    <string name="screen_effects_scaling_mode_stretch">Allunga</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Riempie lo schermo, ignora le proporzioni.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Upscaling nitido in super-risoluzione.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, mantiene le proporzioni.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Passaggio di nitidezza / chiarezza.</string>
+    <string name="screen_effects_scaling_mode_natural">Naturale</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Tonalità più calda.</string>
 </resources>

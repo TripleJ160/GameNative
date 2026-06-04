@@ -1368,4 +1368,25 @@
     <string name="frontend_sync_confirm_keep">Behold</string>
     <string name="frontend_sync_resync_all">Synkroniser alt igen</string>
     <string name="frontend_sync_resync_complete">Frontend-synkronisering fuldført</string>
+    <string name="screen_effects_scaling">Skalering</string>
+    <string name="screen_effects_upscaling">Opskalering</string>
+    <string name="screen_effects_basic_scaling">Grundlæggende skalering</string>
+    <string name="screen_effects_scaling_mode_none">Ingen skalering</string>
+    <string name="screen_effects_scaling_mode_none_desc">Ingen skalering.</string>
+    <string name="screen_effects_scaling_mode_nearest">Nærmeste</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Skarpe pixels (retro).</string>
+    <string name="screen_effects_scaling_mode_linear">Lineær</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Blød skalering.</string>
+    <string name="screen_effects_scaling_mode_fill">Udfyld</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Fylder skærmen, beskærer kanterne.</string>
+    <string name="screen_effects_scaling_mode_stretch">Stræk</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Fylder skærmen, ignorerer billedformat.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Skarp superopløsnings-opskalering.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, bevarer billedformat.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Skarphed / klarhed.</string>
+    <string name="screen_effects_scaling_mode_natural">Naturlig</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Varmere farvetone.</string>
 </resources>

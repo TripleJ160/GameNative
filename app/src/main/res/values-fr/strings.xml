@@ -1498,4 +1498,25 @@
     <string name="frontend_sync_confirm_keep">Conserver</string>
     <string name="frontend_sync_resync_all">Tout resynchroniser</string>
     <string name="frontend_sync_resync_complete">Synchronisation frontend terminée</string>
+    <string name="screen_effects_scaling">Mise à l\'échelle</string>
+    <string name="screen_effects_upscaling">Super-résolution</string>
+    <string name="screen_effects_basic_scaling">Mise à l\'échelle de base</string>
+    <string name="screen_effects_scaling_mode_none">Aucune mise à l\'échelle</string>
+    <string name="screen_effects_scaling_mode_none_desc">Aucune mise à l\'échelle.</string>
+    <string name="screen_effects_scaling_mode_nearest">Au plus proche</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Pixels nets (rétro).</string>
+    <string name="screen_effects_scaling_mode_linear">Linéaire</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Mise à l\'échelle lisse.</string>
+    <string name="screen_effects_scaling_mode_fill">Remplir</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Remplit l\'écran, rogne les bords.</string>
+    <string name="screen_effects_scaling_mode_stretch">Étirer</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Remplit l\'écran, ignore le format.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Mise à l\'échelle nette en super-résolution.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, conserve le format d\'image.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Passe de netteté / clarté.</string>
+    <string name="screen_effects_scaling_mode_natural">Naturel</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Teinte plus chaude.</string>
 </resources>

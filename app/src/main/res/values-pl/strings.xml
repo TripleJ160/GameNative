@@ -1501,4 +1501,25 @@
     <string name="frontend_sync_confirm_keep">Zachowaj</string>
     <string name="frontend_sync_resync_all">Ponowna synchronizacja wszystkich</string>
     <string name="frontend_sync_resync_complete">Synchronizacja frontend zakończona</string>
+    <string name="screen_effects_scaling">Skalowanie</string>
+    <string name="screen_effects_upscaling">Skalowanie w górę</string>
+    <string name="screen_effects_basic_scaling">Podstawowe skalowanie</string>
+    <string name="screen_effects_scaling_mode_none">Bez skalowania</string>
+    <string name="screen_effects_scaling_mode_none_desc">Bez skalowania.</string>
+    <string name="screen_effects_scaling_mode_nearest">Najbliższy</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Ostre piksele (retro).</string>
+    <string name="screen_effects_scaling_mode_linear">Liniowe</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Płynne skalowanie.</string>
+    <string name="screen_effects_scaling_mode_fill">Wypełnij</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Wypełnia ekran, przycina krawędzie.</string>
+    <string name="screen_effects_scaling_mode_stretch">Rozciągnij</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Wypełnia ekran, ignoruje proporcje.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Ostre skalowanie super-rozdzielczości.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, zachowuje proporcje.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Wyostrzanie / klarowność.</string>
+    <string name="screen_effects_scaling_mode_natural">Naturalny</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Cieplejszy odcień kolorów.</string>
 </resources>

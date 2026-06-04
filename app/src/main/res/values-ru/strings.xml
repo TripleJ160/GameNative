@@ -1431,4 +1431,25 @@ https://gamenative.app
     <string name="frontend_sync_confirm_keep">Сохранить</string>
     <string name="frontend_sync_resync_all">Повторная синхронизация всего</string>
     <string name="frontend_sync_resync_complete">Синхронизация frontend завершена</string>
+    <string name="screen_effects_scaling">Масштабирование</string>
+    <string name="screen_effects_upscaling">Апскейлинг</string>
+    <string name="screen_effects_basic_scaling">Базовое масштабирование</string>
+    <string name="screen_effects_scaling_mode_none">Без масштабирования</string>
+    <string name="screen_effects_scaling_mode_none_desc">Без масштабирования.</string>
+    <string name="screen_effects_scaling_mode_nearest">Ближайший</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Чёткие пиксели (ретро).</string>
+    <string name="screen_effects_scaling_mode_linear">Линейное</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Плавное масштабирование.</string>
+    <string name="screen_effects_scaling_mode_fill">Заполнить</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Заполняет экран, обрезая края.</string>
+    <string name="screen_effects_scaling_mode_stretch">Растянуть</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Заполняет экран, игнорируя соотношение сторон.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Чёткое масштабирование сверхвысокого разрешения.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, сохраняет соотношение сторон.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Повышение резкости / чёткости.</string>
+    <string name="screen_effects_scaling_mode_natural">Естественный</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Более тёплый оттенок.</string>
 </resources>

@@ -1502,4 +1502,25 @@
     <string name="frontend_sync_confirm_keep">유지</string>
     <string name="frontend_sync_resync_all">전체 재동기화</string>
     <string name="frontend_sync_resync_complete">프론트엔드 동기화 완료</string>
+    <string name="screen_effects_scaling">스케일링</string>
+    <string name="screen_effects_upscaling">업스케일링</string>
+    <string name="screen_effects_basic_scaling">기본 스케일링</string>
+    <string name="screen_effects_scaling_mode_none">스케일링 없음</string>
+    <string name="screen_effects_scaling_mode_none_desc">스케일링 없음.</string>
+    <string name="screen_effects_scaling_mode_nearest">최근접</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">선명한 픽셀(레트로).</string>
+    <string name="screen_effects_scaling_mode_linear">선형</string>
+    <string name="screen_effects_scaling_mode_linear_desc">부드러운 스케일링.</string>
+    <string name="screen_effects_scaling_mode_fill">채우기</string>
+    <string name="screen_effects_scaling_mode_fill_desc">화면을 채우고 가장자리를 자릅니다.</string>
+    <string name="screen_effects_scaling_mode_stretch">늘이기</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">화면비를 무시하고 화면을 채웁니다.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">선명한 초해상도 업스케일.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, 화면비 유지.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">샤픈/선명도 패스.</string>
+    <string name="screen_effects_scaling_mode_natural">자연</string>
+    <string name="screen_effects_scaling_mode_natural_desc">더 따뜻한 색조.</string>
 </resources>

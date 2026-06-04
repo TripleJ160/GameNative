@@ -1497,4 +1497,25 @@
     <string name="frontend_sync_confirm_keep">Зберегти</string>
     <string name="frontend_sync_resync_all">Повторна синхронізація всього</string>
     <string name="frontend_sync_resync_complete">Синхронізація frontend завершена</string>
+    <string name="screen_effects_scaling">Масштабування</string>
+    <string name="screen_effects_upscaling">Апскейлінг</string>
+    <string name="screen_effects_basic_scaling">Базове масштабування</string>
+    <string name="screen_effects_scaling_mode_none">Без масштабування</string>
+    <string name="screen_effects_scaling_mode_none_desc">Без масштабування.</string>
+    <string name="screen_effects_scaling_mode_nearest">Найближчий</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Чіткі пікселі (ретро).</string>
+    <string name="screen_effects_scaling_mode_linear">Лінійне</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Плавне масштабування.</string>
+    <string name="screen_effects_scaling_mode_fill">Заповнити</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Заповнює екран, обрізаючи краї.</string>
+    <string name="screen_effects_scaling_mode_stretch">Розтягнути</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Заповнює екран, ігноруючи співвідношення сторін.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Чіткий апскейл надвисокої роздільності.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, зберігає співвідношення сторін.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Прохід різкості / чіткості.</string>
+    <string name="screen_effects_scaling_mode_natural">Природний</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Тепліший відтінок.</string>
 </resources>

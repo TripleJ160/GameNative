@@ -1481,8 +1481,19 @@
     <string name="performance_hud_battery_temperature">電池溫度</string>
 
     <string name="screen_effects_scaling">縮放</string>
+    <string name="screen_effects_upscaling">超解析度</string>
+    <string name="screen_effects_basic_scaling">基本縮放</string>
+    <string name="screen_effects_scaling_mode_none_desc">不縮放。</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">清晰像素（復古）。</string>
+    <string name="screen_effects_scaling_mode_linear_desc">平滑縮放。</string>
+    <string name="screen_effects_scaling_mode_fill_desc">填滿螢幕，裁切邊緣。</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">拉伸填滿螢幕，忽略長寬比。</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">清晰的超解析度放大。</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR，維持長寬比。</string>
+    <string name="screen_effects_scaling_mode_dls_desc">銳化／清晰度處理。</string>
+    <string name="screen_effects_scaling_mode_natural_desc">更暖的色調。</string>
     <string name="screen_effects_scaling_mode">縮放模式</string>
-    <string name="screen_effects_scaling_mode_none">無</string>
+    <string name="screen_effects_scaling_mode_none">不縮放</string>
     <string name="screen_effects_scaling_mode_nearest">最近鄰</string>
     <string name="screen_effects_scaling_mode_linear">線性</string>
     <string name="screen_effects_scaling_mode_fill">填充</string>

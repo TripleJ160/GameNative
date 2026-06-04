@@ -1487,8 +1487,19 @@
 
     <!-- 屏幕效果 -->
     <string name="screen_effects_scaling">缩放</string>
+    <string name="screen_effects_upscaling">超分辨率</string>
+    <string name="screen_effects_basic_scaling">基础缩放</string>
+    <string name="screen_effects_scaling_mode_none_desc">不缩放。</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">清晰像素（复古）。</string>
+    <string name="screen_effects_scaling_mode_linear_desc">平滑缩放。</string>
+    <string name="screen_effects_scaling_mode_fill_desc">填满屏幕，裁剪边缘。</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">拉伸填满屏幕，忽略宽高比。</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">清晰的超分辨率放大。</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR，保持宽高比。</string>
+    <string name="screen_effects_scaling_mode_dls_desc">锐化／清晰度处理。</string>
+    <string name="screen_effects_scaling_mode_natural_desc">更暖的色调。</string>
     <string name="screen_effects_scaling_mode">缩放模式</string>
-    <string name="screen_effects_scaling_mode_none">无</string>
+    <string name="screen_effects_scaling_mode_none">不缩放</string>
     <string name="screen_effects_scaling_mode_nearest">最近邻</string>
     <string name="screen_effects_scaling_mode_linear">线性</string>
     <string name="screen_effects_scaling_mode_fill">填充</string>

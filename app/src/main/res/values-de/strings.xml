@@ -1438,4 +1438,25 @@
     <string name="frontend_sync_confirm_keep">Behalten</string>
     <string name="frontend_sync_resync_all">Alle neu synchronisieren</string>
     <string name="frontend_sync_resync_complete">Frontend-Synchronisierung abgeschlossen</string>
+    <string name="screen_effects_scaling">Skalierung</string>
+    <string name="screen_effects_upscaling">Hochskalierung</string>
+    <string name="screen_effects_basic_scaling">Einfache Skalierung</string>
+    <string name="screen_effects_scaling_mode_none">Keine Skalierung</string>
+    <string name="screen_effects_scaling_mode_none_desc">Keine Skalierung.</string>
+    <string name="screen_effects_scaling_mode_nearest">Nächster</string>
+    <string name="screen_effects_scaling_mode_nearest_desc">Scharfe Pixel (Retro).</string>
+    <string name="screen_effects_scaling_mode_linear">Linear</string>
+    <string name="screen_effects_scaling_mode_linear_desc">Weiche Skalierung.</string>
+    <string name="screen_effects_scaling_mode_fill">Füllen</string>
+    <string name="screen_effects_scaling_mode_fill_desc">Füllt den Bildschirm, schneidet Ränder ab.</string>
+    <string name="screen_effects_scaling_mode_stretch">Strecken</string>
+    <string name="screen_effects_scaling_mode_stretch_desc">Füllt den Bildschirm, ignoriert Seitenverhältnis.</string>
+    <string name="screen_effects_scaling_mode_fsr">FSR</string>
+    <string name="screen_effects_scaling_mode_fsr_desc">Scharfe Super-Resolution-Hochskalierung.</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect">FSR Fit</string>
+    <string name="screen_effects_scaling_mode_fsr_aspect_desc">FSR, behält Seitenverhältnis bei.</string>
+    <string name="screen_effects_scaling_mode_dls">DLS</string>
+    <string name="screen_effects_scaling_mode_dls_desc">Schärfen / Klarheit.</string>
+    <string name="screen_effects_scaling_mode_natural">Natürlich</string>
+    <string name="screen_effects_scaling_mode_natural_desc">Wärmerer Farbton.</string>
 </resources>
