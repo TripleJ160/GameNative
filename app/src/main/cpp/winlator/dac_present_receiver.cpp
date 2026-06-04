@@ -116,6 +116,7 @@ static DacReceiver* g_dacReceiver = nullptr;
 static std::atomic<uint64_t> g_dacLatencyUs{0};
 static std::atomic<uint64_t> g_dacFrameTimeUs{0};
 static std::atomic<uint64_t> g_dacJitterUs{0};
+static std::atomic<uint64_t> g_prevFrameUs{0};   /* last present time (frametime src) */
 
 static inline uint64_t mono_us() {
     struct timespec ts;
@@ -137,6 +138,21 @@ static inline uint64_t ema_us(std::atomic<uint64_t>& acc, uint64_t sample) {
  * native scanout since both go through scanoutSetBuffer. */
 extern "C" uint64_t dac_now_us() { return mono_us(); }
 extern "C" void dac_record_true_latency(uint64_t latencyUs) { ema_us(g_dacLatencyUs, latencyUs); }
+
+/* Frametime + jitter, measured at the SINGLE common present point
+ * (VulkanRendererContext::scanoutSetBuffer) so ALL three pipelines — native,
+ * DAC quality, DAC performance — report identical, real per-frame timing.
+ * nowUs = scanout-submit timestamp. The jitter EMA feeds back into the
+ * frametime EMA so the HUD can show one stable (jitter-absorbed) value. */
+extern "C" void dac_record_frame(uint64_t nowUs) {
+    uint64_t prev = g_prevFrameUs.exchange(nowUs, std::memory_order_relaxed);
+    if (prev != 0 && nowUs > prev) {
+        uint64_t ft = nowUs - prev;
+        uint64_t ftEma = ema_us(g_dacFrameTimeUs, ft);
+        uint64_t dev = (ft > ftEma) ? (ft - ftEma) : (ftEma - ft);
+        ema_us(g_dacJitterUs, dev);
+    }
+}
 
 static void send_release(DacReceiver* st, uint32_t slot, uint8_t displayed) {
     if (!st || st->clientFd < 0) return;
@@ -278,6 +294,7 @@ static void realloc_pool(DacReceiver* st, uint32_t width, uint32_t height, uint3
     g_dacLatencyUs.store(0, std::memory_order_relaxed);
     g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
     g_dacJitterUs.store(0, std::memory_order_relaxed);
+    g_prevFrameUs.store(0, std::memory_order_relaxed);
 
     st->vsyncPaused.store(false, std::memory_order_release);
     LOGI("realloc_pool: now %ux%u count=%u (native-owned)", width, height, count);
@@ -297,7 +314,6 @@ static void* dac_recv_thread(void* arg) {
      * are flowing. Broforce/Vampire Survivors present almost immediately so they
      * are unaffected. */
     int prevSlot = -1;
-    uint64_t prevArriveUs = 0;   /* for frametime + jitter */
 
     while (st->running.load(std::memory_order_relaxed)) {
         struct present_msg pmsg;
@@ -329,16 +345,8 @@ static void* dac_recv_thread(void* arg) {
         }
         if (pmsg.type != MSG_PRESENT) continue;
 
-        /* T1 — frame arrival. Also update frametime/jitter EMAs. */
-        uint64_t arriveUs = mono_us();
-        if (prevArriveUs != 0) {
-            uint64_t ft = arriveUs - prevArriveUs;
-            uint64_t ftEma = ema_us(g_dacFrameTimeUs, ft);
-            uint64_t dev = (ft > ftEma) ? (ft - ftEma) : (ftEma - ft);
-            ema_us(g_dacJitterUs, dev);
-        }
-        prevArriveUs = arriveUs;
-
+        /* Frametime/jitter are now measured in scanoutSetBuffer (the common
+         * present point for native + DAC), so nothing to do here. */
         int acquireFd = -1;
         struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
         if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
@@ -420,6 +428,7 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
     g_dacLatencyUs.store(0, std::memory_order_relaxed);
     g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
     g_dacJitterUs.store(0, std::memory_order_relaxed);
+    g_prevFrameUs.store(0, std::memory_order_relaxed);
 
     st->running.store(true, std::memory_order_relaxed);
     if (pthread_create(&st->thread, nullptr, dac_recv_thread, st) != 0) {
@@ -457,6 +466,7 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStopPresentReceiver(
     g_dacLatencyUs.store(0, std::memory_order_relaxed);
     g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
     g_dacJitterUs.store(0, std::memory_order_relaxed);
+    g_prevFrameUs.store(0, std::memory_order_relaxed);
     if (st->slotsNativeOwned) {
         for (int i = 0; i < st->slotCount; i++)
             if (st->slots[i]) AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(st->slots[i]));

@@ -340,11 +340,11 @@ class PerformanceHudView(
             gpuValue = gpuPercent?.toFloat(),
             frameTimeValue = frameTimeMs,
             fps = String.format(Locale.US, "FPS %.1f", currentFps),
-            frametime = when {
-                frameTimeMs <= 0f -> null
-                jitterMs > 0f -> String.format(Locale.US, "FT %.1f±%.1f ms", frameTimeMs, jitterMs)
-                else -> String.format(Locale.US, "FT %.1f ms", frameTimeMs) // native: jitter not instrumented
-            },
+            // Single solid frametime value across all 3 modes (native / quality /
+            // performance). Jitter is absorbed into the smoothed FT EMA rather than
+            // shown as a ± spread.
+            frametime = if (frameTimeMs <= 0f) null
+                        else String.format(Locale.US, "FT %.1f ms", frameTimeMs),
             latency = if (latencyMs > 0f) String.format(Locale.US, "LAT %.1f ms", latencyMs) else null,
             cpu = cpuPercent?.let { "CPU $it%" },
             gpu = gpuPercent?.let { "GPU $it%" },

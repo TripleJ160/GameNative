@@ -19,10 +19,20 @@ typedef void  (*pfn_STSetVisibility)(void*, void*, int8_t);
 typedef void  (*pfn_STSetGeometry)(void*, void*, const ARect*, const ARect*, int32_t);
 typedef void  (*pfn_STSetOnComplete)(void*, void*, void(*)(void*, void*));
 typedef int64_t (*pfn_STStatsLatchTime)(void*);
+// ASurfaceTransaction_setBufferTransparency (API 29). Mark the game layer OPAQUE
+// so SurfaceFlinger does NOT alpha-blend the BGRA8888 buffer against the layers
+// beneath it. Without this, wherever the game's rendered alpha != 1.0 the layer
+// below bleeds through → a slight, scene-dependent off-color / seam that is
+// visible ONLY on the panel (HWC), not in screencap (which reads the layer's RGB
+// alone). Loaded best-effort; if null we keep the old (blended) behavior.
+typedef void (*pfn_STSetTransparency)(void*, void*, int8_t);
+static void* fnSTSetTransparency = nullptr;
+#define ATRANSACTION_TRANSPARENCY_OPAQUE 2  /* ASurfaceTransactionTransparency */
 
 // DAC metric bridge (implemented in dac_present_receiver.cpp, same lib).
 extern "C" uint64_t dac_now_us();
 extern "C" void     dac_record_true_latency(uint64_t latencyUs);
+extern "C" void     dac_record_frame(uint64_t nowUs);  // frametime/jitter (all modes)
 
 bool VulkanRendererContext::loadScanoutApi() {
     if (scanoutApiLoaded) return fnSCCreateFromWin != nullptr;
@@ -46,6 +56,7 @@ bool VulkanRendererContext::loadScanoutApi() {
     // Optional (latency only): present-completion callback + latch timestamp.
     fnSTSetOnComplete  = dlsym(lib, "ASurfaceTransaction_setOnComplete");
     fnSTStatsLatchTime = dlsym(lib, "ASurfaceTransactionStats_getLatchTime");
+    fnSTSetTransparency = dlsym(lib, "ASurfaceTransaction_setBufferTransparency");
 
     bool coreOk = fnSCCreateFromWin && fnSCRelease &&
                   fnSTCreate && fnSTDelete && fnSTApply &&
@@ -69,6 +80,7 @@ bool VulkanRendererContext::loadScanoutApi() {
 #define ST_SETZORDER(t,sc,z)   if(fnSTSetZOrder) ((pfn_STSetZOrder)fnSTSetZOrder)((t),(sc),(z))
 #define ST_SETVIS(t,sc,v)      ((pfn_STSetVisibility)fnSTSetVisibility)((t),(sc),(v))
 #define ST_SETGEO(t,sc,s,d,r)  ((pfn_STSetGeometry)fnSTSetGeometry)((t),(sc),(s),(d),(r))
+#define ST_SETOPAQUE(t,sc)     if(fnSTSetTransparency) ((pfn_STSetTransparency)fnSTSetTransparency)((t),(sc),ATRANSACTION_TRANSPARENCY_OPAQUE)
 
 static inline bool arectEq(const ARect& a, const ARect& b) {
     return a.left==b.left && a.top==b.top && a.right==b.right && a.bottom==b.bottom;
@@ -93,6 +105,10 @@ void VulkanRendererContext::initScanout() {
     void* setupTx = ST_CREATE();
     ST_SETZORDER(setupTx, scanoutGameSC,   0); ST_SETVIS(setupTx, scanoutGameSC,   0);
     ST_SETZORDER(setupTx, scanoutCursorSC, 1); ST_SETVIS(setupTx, scanoutCursorSC, 0);
+    // Game layer is fullscreen + opaque: stop SF alpha-blending it against the
+    // layers below (fixes scene-dependent off-color/seams seen only on the panel).
+    // Cursor stays default (translucent) so its alpha is honored.
+    ST_SETOPAQUE(setupTx, scanoutGameSC);
     ST_APPLY(setupTx);
     ST_DELETE(setupTx);
 
@@ -129,6 +145,10 @@ void VulkanRendererContext::initScanoutFromWindows(ANativeWindow* gameWin, ANati
     void* setupTx = ST_CREATE();
     ST_SETZORDER(setupTx, scanoutGameSC,   0); ST_SETVIS(setupTx, scanoutGameSC,   0);
     ST_SETZORDER(setupTx, scanoutCursorSC, 1); ST_SETVIS(setupTx, scanoutCursorSC, 0);
+    // Game layer is fullscreen + opaque: stop SF alpha-blending it against the
+    // layers below (fixes scene-dependent off-color/seams seen only on the panel).
+    // Cursor stays default (translucent) so its alpha is honored.
+    ST_SETOPAQUE(setupTx, scanoutGameSC);
     ST_APPLY(setupTx);
     ST_DELETE(setupTx);
 
@@ -184,6 +204,9 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
     // native). The onComplete callback below stamps T2 = SurfaceFlinger latch time,
     // giving true, comparable compositor latency for BOTH pipelines.
     uint64_t t1 = dac_now_us();
+    // Frametime + jitter for the HUD — measured here so native, DAC-quality and
+    // DAC-performance all derive identical, real per-frame timing from one point.
+    dac_record_frame(t1);
 
     void* t = scanoutGameTx;
 
