@@ -677,8 +677,8 @@ fun XServerScreen(
                 val r = xServerView?.renderer as? VulkanRenderer
                 val dacFps = r?.getDacFps() ?: 0f
                 if (dacFps > 0f) {
-                    // DAC bypasses the Java frame path, so frameRating reads 0;
-                    // derive FPS from libdac's frametime instead.
+                    // FPS is derived from libdac's measured frametime (1e6/ft) in
+                    // all pipelines; frameRating (Java path) is only the fallback.
                     dacFps
                 } else {
                     val raw = frameRating?.currentFPS ?: 0f
@@ -686,10 +686,10 @@ fun XServerScreen(
                     raw * mult
                 }
             },
-            // Latency + jitter: real DAC compositor metrics from libdac.so. In native
-            // mode these read 0 (not measurable — prebuilt async renderer); the HUD
-            // simply hides the rows. Frametime: DAC from libdac, native from the
-            // proven frameRating counter (1000/FPS) — clean + comparable.
+            // FPS / frametime / latency / jitter are all measured in libdac at the
+            // shared scanout present point (scanoutSetBuffer), so they're real and
+            // comparable across Native, Quality and Performance. The frameRating
+            // fallback below only applies before the first frame is delivered.
             latencyProvider = { (xServerView?.renderer as? VulkanRenderer)?.getDacLatencyMs() ?: 0f },
             frameTimeProvider = {
                 val r = xServerView?.renderer as? VulkanRenderer

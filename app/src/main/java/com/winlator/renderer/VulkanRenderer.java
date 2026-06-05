@@ -195,13 +195,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         }
     }
 
-    // ── HUD performance metrics — DAC modes only ─────────────────────────────────
-    // Real compositor metrics measured in libdac.so (present-arrival → scanout
-    // submit): latency, frametime, jitter. Return 0 when DAC isn't delivering, so
-    // the HUD provider falls back to frameRating for native-mode FPS/frametime.
-    // (Native-mode latency/jitter are NOT exposed: GameNative's Vulkan renderer is
-    // a prebuilt blob with no per-frame callback and async scanout submit, so a
-    // Winlator-style native EMA isn't measurable from this layer.)
+    // ── HUD performance metrics — all pipelines ──────────────────────────────────
+    // Real compositor metrics measured in libdac.so at the shared scanout present
+    // point (scanoutSetBuffer): latency (submit → SurfaceFlinger latch), frametime
+    // and jitter. Native, Quality and Performance all present through
+    // scanoutSetBuffer, so these are populated in every mode (not DAC-only). They
+    // read 0 only before the first frame is delivered, in which case the HUD falls
+    // back to the frameRating counter.
     private native long nativeGetDacLatencyUs();
     private native long nativeGetDacFrameTimeUs();
     private native long nativeGetDacJitterUs();
