@@ -300,6 +300,7 @@ public class PresentExtension implements Extension {
             boolean isNative = vr != null && vr.isNativeMode();
 
             if (isNative && pixmap.drawable.isDirectScanout()) {
+                com.winlator.renderer.ScanoutStats.presentFlip.incrementAndGet();
                 content.setTexture(pixmap.drawable.getTexture());
                 content.setDirectScanout(true);
                 sendCompleteNotify(window, serial, Kind.PIXMAP, Mode.FLIP, ust, msc);
@@ -310,12 +311,14 @@ public class PresentExtension implements Extension {
                 if (targetFps > 0) scheduleIdleNotify(window, pixmap, serial, idleFence, targetFps, vr);
                 else sendIdleNotify(window, pixmap, serial, idleFence);
             } else if (vr != null && window.attributes.isMapped()) {
+                com.winlator.renderer.ScanoutStats.presentCopyDirect.incrementAndGet();
                 sendCompleteNotify(window, serial, Kind.PIXMAP, Mode.COPY, ust, msc);
                 flushClientOutput(client);
                 vr.onUpdateWindowContentDirect(window, pixmap.drawable, xOff, yOff);
                 if (targetFps > 0) scheduleIdleNotify(window, pixmap, serial, idleFence, targetFps, vr);
                 else sendIdleNotify(window, pixmap, serial, idleFence);
             } else {
+                com.winlator.renderer.ScanoutStats.presentComposite.incrementAndGet();
                 content.copyArea((short)0, (short)0, xOff, yOff,
                     pixmap.drawable.width, pixmap.drawable.height, pixmap.drawable);
                 sendCompleteNotify(window, serial, Kind.PIXMAP, Mode.COPY, ust, msc);

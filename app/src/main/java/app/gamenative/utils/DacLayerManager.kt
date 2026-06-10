@@ -39,6 +39,12 @@ object DacLayerManager {
     const val PIPELINE_QUALITY = "quality"
     const val PIPELINE_PERFORMANCE = "performance"
     const val PIPELINE_NATIVE = "native"
+    // EXPERIMENTAL: same guest env as "native" (AHB layer OFF, real X11/DRI3 WSI),
+    // but the host renderer activates the dormant DRI3-AHB -> Present-FLIP ->
+    // nativeScanoutSetBuffer direct-scanout path (renderer.setNativeMode(true)).
+    // Lets us A/B the directScanout latency against classic composite "native".
+    // Requires DRI3 on (the path consumes AHB DRI3 pixmaps, modifiers==1255).
+    const val PIPELINE_NATIVE_SCANOUT = "native-scanout"
     // TESTING DEFAULT: Quality so that a wrapper/Turnip-driver container auto-arms
     // DAC without the (not-yet-built) Graphics Pipeline UI. Vortek/virgl containers
     // are unaffected (isSupported() gates on the wrapper driver). Revert to
@@ -125,6 +131,16 @@ object DacLayerManager {
         val p = pipeline(container)
         return p == PIPELINE_QUALITY || p == PIPELINE_PERFORMANCE
     }
+
+    /**
+     * Whether the experimental host-side direct-scanout path should be activated
+     * (renderer.setNativeMode(true)). This is NOT a DAC-layer pipeline — the guest
+     * AHB layer stays OFF (isArmed=false), so the guest presents through the real
+     * X11/DRI3 WSI; only the renderer's dormant DRI3-AHB scanout fast path is armed.
+     */
+    @JvmStatic
+    fun usesNativeScanout(container: Container): Boolean =
+        pipeline(container) == PIPELINE_NATIVE_SCANOUT
 
     /**
      * Install the AHB layer runtime into the container's filesystem.

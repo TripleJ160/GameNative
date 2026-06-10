@@ -541,6 +541,17 @@ fun XServerScreen(
             is VulkanRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
             is GLRenderer -> applyScreenEffectsConfig(renderer, screenEffectsConfig)
         }
+        // EXPERIMENTAL "native-scanout" pipeline: activate the dormant host-side
+        // DRI3-AHB -> Present-FLIP -> nativeScanoutSetBuffer direct-scanout path.
+        // The guest AHB layer stays OFF (DacLayerManager.isArmed=false); only the
+        // renderer flips into nativeMode so establishScanout() + the directScanout
+        // branch run. Requires DRI3 (the path consumes AHB DRI3 pixmaps).
+        (xServerView?.renderer as? VulkanRenderer)?.let { vr ->
+            if (DacLayerManager.usesNativeScanout(container)) {
+                Timber.i("native-scanout pipeline: renderer.setNativeMode(true) (DRI3=${container.isUseDRI3})")
+                vr.setNativeMode(true)
+            }
+        }
     }
 
     fun applyFpsLimiterToEngines(limit: Int) {

@@ -568,11 +568,13 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 long ahbPtr = g.getHardwareBufferPtr();
                 if (ahbPtr != 0) {
                     if (nativeMode && pixmap.isDirectScanout() && nativeIsScanoutActive(nativeHandle)) {
+                        ScanoutStats.rScanout.incrementAndGet();
                         int fenceFd = g.unlock();
                         nativeScanoutSetBuffer(nativeHandle, ahbPtr,
                             rx, ry, pixmap.width, pixmap.height, fenceFd);
                         g.lock();
                     } else {
+                        ScanoutStats.rCompositeAhb.incrementAndGet();
                         nativeUpdateWindowContentAHB(nativeHandle, targetId, ahbPtr,
                             pixmap.width, pixmap.height, rx, ry);
                     }
@@ -610,6 +612,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         int rx = window.getRootX();
         int ry = window.getRootY();
         long drawableId = did(drawable);
+        ScanoutStats.maybeDump();
 
         synchronized (drawable.renderLock) {
             if (drawable.getTexture() instanceof GPUImage) {
@@ -617,7 +620,11 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 long ahbPtr = g.getHardwareBufferPtr();
                 if (ahbPtr != 0) {
                     boolean scanoutNow = nativeMode && nativeIsScanoutActive(handle);
+                    ScanoutStats.gDirectScanout = drawable.isDirectScanout();
+                    ScanoutStats.gScanoutActive = scanoutNow;
+                    ScanoutStats.gEffectsCompositor = effectsRequireCompositor;
                     if (nativeMode && drawable.isDirectScanout() && scanoutNow) {
+                        ScanoutStats.rScanout.incrementAndGet();
                         boolean wasDelivered = nativeIsGameFrameDelivered(handle);
                         int fenceFd = g.unlock();
                         nativeScanoutSetBuffer(handle, ahbPtr,
@@ -629,6 +636,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                             xRenderingPausedForScanout = true;
                         }
                     } else if (!scanoutNow) {
+                        ScanoutStats.rCompositeAhb.incrementAndGet();
                         nativeUpdateWindowContentAHB(handle, drawableId, ahbPtr,
                             drawable.width, drawable.height, rx, ry);
                     }
@@ -636,6 +644,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                 }
                 java.nio.ByteBuffer vd = g.getVirtualData();
                 if (vd != null) {
+                    ScanoutStats.rShm.incrementAndGet();
                     short s = g.getStride() > 0 ? g.getStride() : drawable.width;
                     nativeUpdateWindowContent(handle, drawableId, vd,
                         drawable.width, drawable.height, s, rx, ry);
@@ -644,6 +653,7 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
             }
             java.nio.ByteBuffer buf = drawable.getBuffer();
             if (buf == null) return;
+            ScanoutStats.rShm.incrementAndGet();
             short stride = (short)(buf.capacity() / (drawable.height * 4));
             nativeUpdateWindowContent(handle, drawableId, buf,
                 drawable.width, drawable.height, stride, rx, ry);
@@ -737,9 +747,19 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
         } else {
             tearDownScanout();
         }
-        xServerView.queueEvent(this::updateScene);
+        try { xServerView.queueEvent(this::updateScene); }
+        catch (Throwable t) { android.util.Log.w("VulkanRenderer", "setNativeMode queueEvent: " + t); }
+        // Cosmetic toast — guarded because setNativeMode may be invoked outside a
+        // live UI-toggle context (e.g. at renderer init for the native-scanout pipeline).
         final String msg = mode ? "Native Rendering+ Enabled" : "Native Rendering+ Disabled";
-        xServerView.post(() -> Toast.makeText(xServerView.getContext(), msg, Toast.LENGTH_SHORT).show());
+        try {
+            xServerView.post(() -> {
+                try {
+                    android.content.Context ctx = xServerView.getContext();
+                    if (ctx != null) Toast.makeText(ctx.getApplicationContext(), msg, Toast.LENGTH_SHORT).show();
+                } catch (Throwable ignored) {}
+            });
+        } catch (Throwable ignored) {}
     }
 
     // Stands up the SurfaceControl layers and hands them to native for the
@@ -747,10 +767,29 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
     private void establishScanout() {
         xRenderingPausedForScanout = false;
         xServer.setRenderingEnabled(true);
+        establishScanoutAttempt(0);
+    }
+
+    // Retry up to ~1s: getSurfaceControl() is null/invalid until the SurfaceView's
+    // surface is created, which can be AFTER the renderer is constructed. Never let
+    // a failure here crash the app — fall back to the child-SC native path.
+    private void establishScanoutAttempt(final int attempt) {
+        if (xServerView == null) return;
         xServerView.post(() -> {
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
-                try {
+            try {
+                if (!nativeMode) return; // toggled off while waiting
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
                     android.view.SurfaceControl xsc = xServerView.getSurfaceControl();
+                    if (xsc == null || !xsc.isValid()) {
+                        if (attempt < 60) {
+                            xServerView.postDelayed(() -> establishScanoutAttempt(attempt + 1), 16);
+                        } else {
+                            android.util.Log.w("VulkanRenderer",
+                                "scanout: parent SurfaceControl not ready after retries; falling back to child SC");
+                            synchronized (lock) { if (nativeHandle != 0) nativeInitScanout(nativeHandle); }
+                        }
+                        return;
+                    }
                     scanoutGameSC = new android.view.SurfaceControl.Builder()
                         .setParent(xsc).setName("winlator_game").setOpaque(true).build();
                     scanoutGameSurface = new android.view.Surface(scanoutGameSC);
@@ -773,14 +812,17 @@ public class VulkanRenderer implements WindowManager.OnWindowModificationListene
                             updateTransform();
                         }
                     }
-                } catch (Exception e) {
-                    android.util.Log.w("VulkanRenderer", "Sibling SC failed, using child SC: " + e);
-                    synchronized (lock) {
-                        if (nativeHandle != 0) nativeInitScanout(nativeHandle);
-                    }
+                    android.util.Log.i("VulkanRenderer", "scanout established (sibling SC) attempt=" + attempt);
+                } else {
+                    synchronized (lock) { if (nativeHandle != 0) nativeInitScanout(nativeHandle); }
                 }
-            } else {
-                synchronized (lock) { if (nativeHandle != 0) nativeInitScanout(nativeHandle); }
+            } catch (Throwable e) {
+                android.util.Log.w("VulkanRenderer", "establishScanout failed, child-SC fallback: " + e);
+                try {
+                    synchronized (lock) { if (nativeHandle != 0) nativeInitScanout(nativeHandle); }
+                } catch (Throwable t) {
+                    android.util.Log.e("VulkanRenderer", "child-SC fallback also failed: " + t);
+                }
             }
         });
     }

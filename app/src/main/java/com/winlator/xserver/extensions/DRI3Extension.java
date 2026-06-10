@@ -147,10 +147,15 @@ public class DRI3Extension implements Extension {
         long size = (long)stride * height;
 
         if (modifiers == 1255) {
+            com.winlator.renderer.ScanoutStats.dri3Ahb.incrementAndGet();
             pixmapFromHardwareBuffer(client, pixmapId, width, height, depth, fd);
         }
         else if (modifiers == 1274) {
+            com.winlator.renderer.ScanoutStats.dri3Shm.incrementAndGet();
             pixmapFromFd(client, pixmapId, width, height, stride, offset, depth, fd, size);
+        }
+        else {
+            com.winlator.renderer.ScanoutStats.dri3Other.incrementAndGet();
         }
     }
 

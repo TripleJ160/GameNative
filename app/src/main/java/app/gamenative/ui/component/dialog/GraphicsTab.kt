@@ -72,11 +72,12 @@ fun GraphicsTabContent(state: ContainerConfigState, default: Boolean = false) {
             )
             // Bionic: DAC Graphics Pipeline (Direct Android Compositing).
             // quality = direct-AHB zero-copy, performance = trojan-blit, native = DAC off.
-            val dacPipelineItems = listOf("Quality", "Performance", "Native (Off)")
+            val dacPipelineItems = listOf("Quality", "Performance", "Native (Off)", "Native + Scanout (exp)")
             val dacPipelineIds = listOf(
                 DacLayerManager.PIPELINE_QUALITY,
                 DacLayerManager.PIPELINE_PERFORMANCE,
                 DacLayerManager.PIPELINE_NATIVE,
+                DacLayerManager.PIPELINE_NATIVE_SCANOUT,
             )
             SettingsListDropdown(
                 colors = settingsTileColors(),
