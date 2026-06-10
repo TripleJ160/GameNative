@@ -33,6 +33,11 @@ static void* fnSTSetTransparency = nullptr;
 extern "C" uint64_t dac_now_us();
 extern "C" void     dac_record_true_latency(uint64_t latencyUs);
 extern "C" void     dac_record_frame(uint64_t nowUs);  // frametime/jitter (all modes)
+// Honest release timing: fired from the onComplete callback once SurfaceFlinger
+// has latched/presented this transaction — the receiver releases the PREVIOUS
+// slot to the guest here (instead of on next-present-arrival, which raced SF).
+// No-op when the DAC receiver isn't running (e.g. native-scanout mode).
+extern "C" void     dac_on_scanout_complete(void);
 
 bool VulkanRendererContext::loadScanoutApi() {
     if (scanoutApiLoaded) return fnSCCreateFromWin != nullptr;
@@ -254,6 +259,9 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
                     uint64_t latchUs = (uint64_t)latchNs / 1000ULL;
                     if (latchUs > c->t1) dac_record_true_latency(latchUs - c->t1);
                 }
+                // This frame is on screen → the previously-latched slot is now
+                // replaceable; let the receiver send its MSG_RELEASE honestly.
+                dac_on_scanout_complete();
                 delete c;
             });
     }

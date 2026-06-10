@@ -103,9 +103,24 @@ struct DacReceiver {
     // free them on the next realloc / on stop). The INITIAL slots come from the
     // Java AHardwareBufferPool and are owned/freed by Java — we never free those.
     bool slotsNativeOwned = false;
+
+    // ── Honest release timing (onComplete-driven) ────────────────────────────
+    // Slots presented to scanout but not yet confirmed latched by SurfaceFlinger
+    // (FIFO order; scanout transactions complete in submission order). When the
+    // onComplete callback fires for the head entry, the PREVIOUS latched slot is
+    // definitively off-screen → that's when MSG_RELEASE is sent (displayed=1,
+    // which also serves as the guest's display tick). Guarded by g_cbMtx.
+    static constexpr int PENDQ_CAP = 8;
+    int pendQ[PENDQ_CAP] = {0};
+    int pendHead = 0;
+    int pendCnt = 0;
+    int lastLatched = -1;   /* most recent slot known on-screen */
 };
 
 static DacReceiver* g_dacReceiver = nullptr;
+/* Protects g_dacReceiver lifetime + the pendQ/lastLatched state against the
+ * SurfaceFlinger onComplete callback thread. Lock order: g_cbMtx → sendMtx. */
+static std::mutex g_cbMtx;
 
 /* ── Performance metrics (read by the HUD via JNI getters in libdac) ──────────
  * DAC compositor latency EMA: T1 = present_msg arrival (recvmsg return),
@@ -164,6 +179,25 @@ static void send_release(DacReceiver* st, uint32_t slot, uint8_t displayed) {
     rel.vsync_time_ns = 0;
     std::lock_guard<std::mutex> lk(st->sendMtx);
     send(st->clientFd, &rel, sizeof(rel), MSG_NOSIGNAL);
+}
+
+/* Called from the SurfaceFlinger onComplete callback (binder thread) via
+ * VulkanRendererScanout: the head pending slot has been latched/presented.
+ * The previously-latched slot is now definitively replaced on screen, so THIS
+ * is the honest moment to hand it back to the guest. (The old model released
+ * the previous slot as soon as the NEXT present *arrived* — before SF had
+ * latched it — racing the display; the guest's avoid-last-2-presented ring was
+ * the only thing papering over that.) */
+extern "C" void dac_on_scanout_complete(void) {
+    std::lock_guard<std::mutex> lk(g_cbMtx);
+    DacReceiver* st = g_dacReceiver;
+    if (!st || st->pendCnt == 0) return;   /* native-scanout mode / stale callback */
+    int latched = st->pendQ[st->pendHead];
+    st->pendHead = (st->pendHead + 1) % DacReceiver::PENDQ_CAP;
+    st->pendCnt--;
+    if (st->lastLatched >= 0 && st->lastLatched != latched)
+        send_release(st, (uint32_t)st->lastLatched, 1);
+    st->lastLatched = latched;
 }
 
 /* AChoreographer frame callback — fires once per real panel vsync. Sends one
@@ -291,6 +325,16 @@ static void realloc_pool(DacReceiver* st, uint32_t width, uint32_t height, uint3
     st->height = (int)height;
     st->slotsNativeOwned = true;
 
+    /* Old-pool latch state is meaningless for the new slots (the guest reset
+     * all of its slot-free flags on the ACK). Stale onComplete callbacks from
+     * old-pool transactions hit the pendCnt==0 guard and no-op. */
+    {
+        std::lock_guard<std::mutex> lk(g_cbMtx);
+        st->pendHead = 0;
+        st->pendCnt = 0;
+        st->lastLatched = -1;
+    }
+
     g_dacLatencyUs.store(0, std::memory_order_relaxed);
     g_dacFrameTimeUs.store(0, std::memory_order_relaxed);
     g_dacJitterUs.store(0, std::memory_order_relaxed);
@@ -313,7 +357,6 @@ static void* dac_recv_thread(void* arg) {
      * window path intact during game-window setup, then flips to DAC once frames
      * are flowing. Broforce/Vampire Survivors present almost immediately so they
      * are unaffected. */
-    int prevSlot = -1;
 
     while (st->running.load(std::memory_order_relaxed)) {
         struct present_msg pmsg;
@@ -334,24 +377,49 @@ static void* dac_recv_thread(void* arg) {
             else          LOGE("recv thread: recvmsg failed: %s", strerror(errno));
             break;
         }
-        if ((size_t)ret < sizeof(pmsg)) {
-            LOGE("recv thread: short read (%zd < %zu)", ret, sizeof(pmsg));
-            continue;
-        }
-        if (pmsg.type == MSG_REALLOC) {
-            /* Overloaded present_msg: slot_index=width, dst_x=height, dst_y=count. */
-            realloc_pool(st, pmsg.slot_index, (uint32_t)pmsg.dst_x, (uint32_t)pmsg.dst_y);
-            continue;
-        }
-        if (pmsg.type != MSG_PRESENT) continue;
 
-        /* Frametime/jitter are now measured in scanoutSetBuffer (the common
-         * present point for native + DAC), so nothing to do here. */
+        /* Grab the SCM_RIGHTS fd from THIS segment first — on a stream socket
+         * ancillary data is delivered with the segment's first byte, so it must
+         * be captured before any continuation read below. */
         int acquireFd = -1;
         struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
         if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
             memcpy(&acquireFd, CMSG_DATA(cmsg), sizeof(int));
         }
+
+        /* SOCK_STREAM has no message boundaries: a short read here is a SPLIT
+         * message, not a lost one. Dropping it (the old `continue`) desyncs the
+         * byte stream permanently — every later "message" parses garbage. Read
+         * the remainder instead so framing is preserved. */
+        if ((size_t)ret < sizeof(pmsg)) {
+            size_t got = (size_t)ret;
+            LOGW("recv thread: short read (%zu < %zu), completing", got, sizeof(pmsg));
+            bool dead = false;
+            while (got < sizeof(pmsg)) {
+                ssize_t r2 = recv(st->clientFd, (char*)&pmsg + got, sizeof(pmsg) - got, 0);
+                if (r2 <= 0) { dead = true; break; }
+                got += (size_t)r2;
+            }
+            if (dead) {
+                if (acquireFd >= 0) close(acquireFd);
+                LOGE("recv thread: disconnect during split message");
+                break;
+            }
+        }
+
+        if (pmsg.type == MSG_REALLOC) {
+            /* Overloaded present_msg: slot_index=width, dst_x=height, dst_y=count. */
+            if (acquireFd >= 0) close(acquireFd);
+            realloc_pool(st, pmsg.slot_index, (uint32_t)pmsg.dst_x, (uint32_t)pmsg.dst_y);
+            continue;
+        }
+        if (pmsg.type != MSG_PRESENT) {
+            if (acquireFd >= 0) close(acquireFd);
+            continue;
+        }
+
+        /* Frametime/jitter are now measured in scanoutSetBuffer (the common
+         * present point for native + DAC), so nothing to do here. */
 
         uint32_t slot = pmsg.slot_index;
         if (slot >= (uint32_t)st->slotCount || st->slots[slot] == nullptr) {
@@ -364,6 +432,34 @@ static void* dac_recv_thread(void* arg) {
         if (st->frameCount <= 5 || (st->frameCount % 120 == 0))
             LOGI("recv thread: frame=%ld slot=%u acquireFd=%d", st->frameCount, slot, acquireFd);
 
+        /* Record this present as pending-latch BEFORE submitting to scanout
+         * (its onComplete may fire arbitrarily soon after ST_APPLY).
+         *
+         * Deadlock-proof fallback: if onComplete callbacks are NOT firing on
+         * this device (API < 29 path, or SC callback loss), the queue would
+         * fill while the guest's FIFO acquire blocks at image_count-1 frames
+         * in flight, and no new presents would ever arrive to drain it. So if
+         * the queue reaches slotCount-1, treat the oldest pending as latched
+         * (exactly the old arrival-driven behavior, one frame more lag). On
+         * devices where onComplete works this threshold is never hit. */
+        {
+            std::lock_guard<std::mutex> lk(g_cbMtx);
+            int threshold = st->slotCount > 2 ? st->slotCount - 1 : 2;
+            while (st->pendCnt >= threshold || st->pendCnt >= DacReceiver::PENDQ_CAP - 1) {
+                int forced = st->pendQ[st->pendHead];
+                st->pendHead = (st->pendHead + 1) % DacReceiver::PENDQ_CAP;
+                st->pendCnt--;
+                if (st->lastLatched >= 0 && st->lastLatched != forced)
+                    send_release(st, (uint32_t)st->lastLatched, 1);
+                st->lastLatched = forced;
+                if ((st->frameCount % 600) == 0)
+                    LOGW("recv thread: onComplete not draining, arrival-fallback release (pend=%d)",
+                         st->pendCnt);
+            }
+            st->pendQ[(st->pendHead + st->pendCnt) % DacReceiver::PENDQ_CAP] = (int)slot;
+            st->pendCnt++;
+        }
+
         /* Forward to the renderer's scanout via a DIRECT C++ call (integrated —
          * no dlsym). scanoutSetBuffer takes ownership of the fence fd (hands it
          * to ASurfaceTransaction_setBuffer); SurfaceFlinger waits on it. */
@@ -375,16 +471,14 @@ static void* dac_recv_thread(void* arg) {
             st->ctx->scanoutSetBuffer(reinterpret_cast<AHardwareBuffer*>(st->slots[slot]),
                                       0, 0, st->width, st->height, acquireFd);
             /* True latency (arrival → SurfaceFlinger latch) is recorded by the
-             * renderer's onComplete callback in scanoutSetBuffer, not here. */
+             * renderer's onComplete callback in scanoutSetBuffer; the honest
+             * MSG_RELEASE for the previous slot fires there too
+             * (dac_on_scanout_complete). */
         } else if (acquireFd >= 0) {
             close(acquireFd);
         }
-
-        if (prevSlot >= 0) send_release(st, (uint32_t)prevSlot, 1);
-        prevSlot = (int)slot;
     }
 
-    if (prevSlot >= 0) send_release(st, (uint32_t)prevSlot, 1);
     LOGI("recv thread: exiting (frames=%ld)", st->frameCount);
     return nullptr;
 }
@@ -398,19 +492,25 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
 
     if (g_dacReceiver != nullptr) {
         LOGW("startPresentReceiver: receiver already running, stopping previous");
-        g_dacReceiver->running.store(false, std::memory_order_relaxed);
-        if (g_dacReceiver->vsyncThreadStarted) {
-            if (g_dacReceiver->vsyncLooper) ALooper_wake(g_dacReceiver->vsyncLooper);
-            pthread_join(g_dacReceiver->vsyncThread, nullptr);
+        DacReceiver* old;
+        {   /* Detach under g_cbMtx so an in-flight onComplete callback can't
+             * touch the receiver while we tear it down. */
+            std::lock_guard<std::mutex> lk(g_cbMtx);
+            old = g_dacReceiver;
+            g_dacReceiver = nullptr;
         }
-        if (g_dacReceiver->threadStarted) pthread_join(g_dacReceiver->thread, nullptr);
-        if (g_dacReceiver->slotsNativeOwned) {
-            for (int i = 0; i < g_dacReceiver->slotCount; i++)
-                if (g_dacReceiver->slots[i])
-                    AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(g_dacReceiver->slots[i]));
+        old->running.store(false, std::memory_order_relaxed);
+        if (old->vsyncThreadStarted) {
+            if (old->vsyncLooper) ALooper_wake(old->vsyncLooper);
+            pthread_join(old->vsyncThread, nullptr);
         }
-        delete g_dacReceiver;
-        g_dacReceiver = nullptr;
+        if (old->threadStarted) pthread_join(old->thread, nullptr);
+        if (old->slotsNativeOwned) {
+            for (int i = 0; i < old->slotCount; i++)
+                if (old->slots[i])
+                    AHardwareBuffer_release(reinterpret_cast<AHardwareBuffer*>(old->slots[i]));
+        }
+        delete old;
     }
 
     auto* st = new DacReceiver();
@@ -441,7 +541,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStartPresentReceiver(
         st->vsyncThreadStarted = true;
     else
         LOGW("startPresentReceiver: vsync thread create failed (pacing degraded)");
-    g_dacReceiver = st;
+    {
+        std::lock_guard<std::mutex> lk(g_cbMtx);
+        g_dacReceiver = st;
+    }
     LOGI("startPresentReceiver: started (fd=%d, slots=%d, %dx%d)",
          st->clientFd, st->slotCount, st->width, st->height);
 }
@@ -451,9 +554,13 @@ Java_com_winlator_renderer_VulkanRenderer_nativeStopPresentReceiver(
         JNIEnv*, jobject, jlong handle)
 {
     (void)handle;
-    if (g_dacReceiver == nullptr) return;
-    DacReceiver* st = g_dacReceiver;
-    g_dacReceiver = nullptr;
+    DacReceiver* st;
+    {   /* Detach under g_cbMtx so a late onComplete callback no-ops. */
+        std::lock_guard<std::mutex> lk(g_cbMtx);
+        st = g_dacReceiver;
+        g_dacReceiver = nullptr;
+    }
+    if (st == nullptr) return;
 
     st->running.store(false, std::memory_order_relaxed);
     if (st->vsyncThreadStarted) {
