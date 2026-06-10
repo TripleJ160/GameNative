@@ -100,7 +100,11 @@ object DacLayerManager {
     // Bumped when the bundled .so changes (forces re-copy into containers)
     // v1.1.0: JTRACE runtime-gated (WINLATOR_AHB_JTRACE=1 to enable) — removes
     // ~4 logcat writes/frame from the release hot path.
-    private const val RUNTIME_VERSION = "v1.1.0-android-arm64-v8a"
+    // v1.2.0: release-fence handoff — MSG_RELEASE carries SurfaceFlinger's
+    // release fence (SCM_RIGHTS); acquire CPU-waits it before slot reuse.
+    // Wire structs now come from the shared dac_protocol.h (layout pinned by
+    // static_asserts on both endpoints).
+    private const val RUNTIME_VERSION = "v1.2.0-android-arm64-v8a"
 
     // Asset paths (shipped in Chunk B once the wrapper-ABI .so is built)
     private const val ASSET_DIR = "dac/android_arm64_v8a"

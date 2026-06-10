@@ -40,40 +40,15 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define MSG_PRESENT 1
-#define MSG_RELEASE 2
-#define MSG_VSYNC   6   /* Android → Wine: real panel vsync (AChoreographer) */
-#define MSG_REALLOC     8  /* Wine → Android: reallocate the AHB pool to a new
-                            * resolution/count (dynamic pool — compatibility).
-                            * Overloads present_msg: slot_index=width,
-                            * dst_x=height, dst_y=count (same wire size). */
-#define MSG_REALLOC_ACK 9  /* Android → Wine: pool reallocated; N handles follow.
-                            * Overloads release_msg: slot_index=count. */
+/* Wire protocol (message types, structs, layout pins) — single source of
+ * truth shared with the guest layer. Canonical copy:
+ * winlator-ludashi dlls/wineandroid.drv/dac_protocol.h (keep byte-identical). */
+#include "dac_protocol.h"
 
 /* AHB pool format/usage — MUST match AHardwareBufferPool (BGRA_8888 + GPU
  * color-output | sampled | composer-overlay) so the guest imports identically. */
 #define DAC_AHB_FORMAT 5            /* HAL_PIXEL_FORMAT_BGRA_8888 */
 #define DAC_AHB_USAGE  0xB00ULL     /* 0x200 | 0x100 | 0x800 */
-
-/* Wire layout — MUST match the Wine-side AHB layer (dlls/wineandroid.drv). */
-struct present_msg {
-    uint8_t  type;
-    uint32_t slot_index;
-    int32_t  acquire_fd;       /* render-complete sync_fd (also via SCM_RIGHTS) */
-    int32_t  dst_x, dst_y, dst_w, dst_h;
-    uint64_t present_id;
-    uint8_t  bgra_bytes;
-};
-
-struct release_msg {
-    uint8_t  type;
-    uint32_t slot_index;
-    int32_t  release_fd;       /* -1 */
-    uint8_t  displayed;        /* 1 = shown */
-    uint64_t vsync_time_ns;    /* 0 for plain release */
-};
-
-#define DAC_MAX_SLOTS 4
 
 struct DacReceiver {
     int clientFd = -1;
@@ -169,34 +144,71 @@ extern "C" void dac_record_frame(uint64_t nowUs) {
     }
 }
 
-static void send_release(DacReceiver* st, uint32_t slot, uint8_t displayed) {
-    if (!st || st->clientFd < 0) return;
+/* Send MSG_RELEASE. When releaseFenceFd >= 0 it is SurfaceFlinger's release
+ * fence for that slot's buffer, shipped as SCM_RIGHTS so the guest's acquire
+ * can CPU-wait on it before letting DXVK render into the buffer again. The fd
+ * is consumed (closed) here in all cases. The wire release_fd field stays -1
+ * (vestigial); the cmsg is authoritative — and a guest that doesn't pull the
+ * cmsg just has the kernel close the fd, so this degrades safely against an
+ * older layer. */
+static void send_release(DacReceiver* st, uint32_t slot, uint8_t displayed,
+                         int releaseFenceFd = -1) {
+    if (!st || st->clientFd < 0) {
+        if (releaseFenceFd >= 0) close(releaseFenceFd);
+        return;
+    }
     struct release_msg rel{};
     rel.type = (uint8_t)MSG_RELEASE;
     rel.slot_index = slot;
     rel.release_fd = -1;
     rel.displayed = displayed;
     rel.vsync_time_ns = 0;
-    std::lock_guard<std::mutex> lk(st->sendMtx);
-    send(st->clientFd, &rel, sizeof(rel), MSG_NOSIGNAL);
+
+    struct iovec iov = { &rel, sizeof(rel) };
+    struct msghdr mh = {};
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    if (releaseFenceFd >= 0) {
+        memset(cbuf, 0, sizeof(cbuf));
+        mh.msg_control = cbuf;
+        mh.msg_controllen = sizeof(cbuf);
+        struct cmsghdr* cm = CMSG_FIRSTHDR(&mh);
+        cm->cmsg_level = SOL_SOCKET;
+        cm->cmsg_type = SCM_RIGHTS;
+        cm->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cm), &releaseFenceFd, sizeof(int));
+    }
+    {
+        std::lock_guard<std::mutex> lk(st->sendMtx);
+        sendmsg(st->clientFd, &mh, MSG_NOSIGNAL);
+    }
+    if (releaseFenceFd >= 0) close(releaseFenceFd);
 }
 
 /* Called from the SurfaceFlinger onComplete callback (binder thread) via
- * VulkanRendererScanout: the head pending slot has been latched/presented.
- * The previously-latched slot is now definitively replaced on screen, so THIS
- * is the honest moment to hand it back to the guest. (The old model released
- * the previous slot as soon as the NEXT present *arrived* — before SF had
- * latched it — racing the display; the guest's avoid-last-2-presented ring was
- * the only thing papering over that.) */
-extern "C" void dac_on_scanout_complete(void) {
+ * VulkanRendererScanout: the head pending slot has been latched/presented,
+ * and prevReleaseFenceFd (owned by us; -1 if unavailable) is SF's release
+ * fence for the PREVIOUSLY latched buffer. That previous slot is now
+ * definitively replaced on screen, so THIS is the honest moment to hand it
+ * back to the guest — fence attached. (The old model released the previous
+ * slot as soon as the NEXT present *arrived* — before SF had latched it —
+ * racing the display; the guest's avoid-last-2-presented ring was the only
+ * thing papering over that.) */
+extern "C" void dac_on_scanout_complete(int prevReleaseFenceFd) {
     std::lock_guard<std::mutex> lk(g_cbMtx);
     DacReceiver* st = g_dacReceiver;
-    if (!st || st->pendCnt == 0) return;   /* native-scanout mode / stale callback */
+    if (!st || st->pendCnt == 0) {         /* native-scanout mode / stale callback */
+        if (prevReleaseFenceFd >= 0) close(prevReleaseFenceFd);
+        return;
+    }
     int latched = st->pendQ[st->pendHead];
     st->pendHead = (st->pendHead + 1) % DacReceiver::PENDQ_CAP;
     st->pendCnt--;
     if (st->lastLatched >= 0 && st->lastLatched != latched)
-        send_release(st, (uint32_t)st->lastLatched, 1);
+        send_release(st, (uint32_t)st->lastLatched, 1, prevReleaseFenceFd);
+    else if (prevReleaseFenceFd >= 0)
+        close(prevReleaseFenceFd);
     st->lastLatched = latched;
 }
 

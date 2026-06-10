@@ -28,6 +28,12 @@ typedef int64_t (*pfn_STStatsLatchTime)(void*);
 typedef void (*pfn_STSetTransparency)(void*, void*, int8_t);
 static void* fnSTSetTransparency = nullptr;
 #define ATRANSACTION_TRANSPARENCY_OPAQUE 2  /* ASurfaceTransactionTransparency */
+// ASurfaceTransactionStats_getPreviousReleaseFenceFd (API 29): in transaction
+// N's onComplete, returns a sync_file fd that signals when the display/GPU is
+// done READING the buffer latched before N. Caller owns the returned fd. We
+// forward it to the guest so buffer reuse is fence-honest (loaded best-effort).
+typedef int (*pfn_STStatsPrevReleaseFence)(void*, void*);
+static void* fnSTStatsPrevReleaseFence = nullptr;
 
 // DAC metric bridge (implemented in dac_present_receiver.cpp, same lib).
 extern "C" uint64_t dac_now_us();
@@ -35,9 +41,10 @@ extern "C" void     dac_record_true_latency(uint64_t latencyUs);
 extern "C" void     dac_record_frame(uint64_t nowUs);  // frametime/jitter (all modes)
 // Honest release timing: fired from the onComplete callback once SurfaceFlinger
 // has latched/presented this transaction — the receiver releases the PREVIOUS
-// slot to the guest here (instead of on next-present-arrival, which raced SF).
-// No-op when the DAC receiver isn't running (e.g. native-scanout mode).
-extern "C" void     dac_on_scanout_complete(void);
+// slot to the guest here (instead of on next-present-arrival, which raced SF),
+// forwarding SF's release fence for that buffer (ownership transfers; -1 if
+// unavailable). No-op when the DAC receiver isn't running (native-scanout mode).
+extern "C" void     dac_on_scanout_complete(int prevReleaseFenceFd);
 
 bool VulkanRendererContext::loadScanoutApi() {
     if (scanoutApiLoaded) return fnSCCreateFromWin != nullptr;
@@ -62,6 +69,7 @@ bool VulkanRendererContext::loadScanoutApi() {
     fnSTSetOnComplete  = dlsym(lib, "ASurfaceTransaction_setOnComplete");
     fnSTStatsLatchTime = dlsym(lib, "ASurfaceTransactionStats_getLatchTime");
     fnSTSetTransparency = dlsym(lib, "ASurfaceTransaction_setBufferTransparency");
+    fnSTStatsPrevReleaseFence = dlsym(lib, "ASurfaceTransactionStats_getPreviousReleaseFenceFd");
 
     bool coreOk = fnSCCreateFromWin && fnSCRelease &&
                   fnSTCreate && fnSTDelete && fnSTApply &&
@@ -249,8 +257,8 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
     // latency-only and does NOT touch the release path (the receiver still frees
     // slots), so it's non-interfering.
     if (fnSTSetOnComplete && fnSTStatsLatchTime) {
-        struct LatCtx { uint64_t t1; void* getLatch; };
-        auto* lc = new LatCtx{ t1, fnSTStatsLatchTime };
+        struct LatCtx { uint64_t t1; void* getLatch; void* getPrevFence; void* gameSC; };
+        auto* lc = new LatCtx{ t1, fnSTStatsLatchTime, fnSTStatsPrevReleaseFence, scanoutGameSC };
         ((pfn_STSetOnComplete)fnSTSetOnComplete)(t, (void*)lc,
             [](void* context, void* stats) {
                 auto* c = reinterpret_cast<LatCtx*>(context);
@@ -260,8 +268,12 @@ void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y,
                     if (latchUs > c->t1) dac_record_true_latency(latchUs - c->t1);
                 }
                 // This frame is on screen → the previously-latched slot is now
-                // replaceable; let the receiver send its MSG_RELEASE honestly.
-                dac_on_scanout_complete();
+                // replaceable. Forward SF's release fence for that buffer so the
+                // guest's reuse is fence-honest (receiver owns + closes the fd).
+                int prevFence = -1;
+                if (c->getPrevFence && c->gameSC)
+                    prevFence = ((pfn_STStatsPrevReleaseFence)c->getPrevFence)(stats, c->gameSC);
+                dac_on_scanout_complete(prevFence);
                 delete c;
             });
     }
