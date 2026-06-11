@@ -100,7 +100,7 @@ static inline bool arectEq(const ARect& a, const ARect& b) {
 }
 
 void VulkanRendererContext::initScanout() {
-    if (scanoutActive.load()) return;
+    if (scanoutReady.load() || scanoutActive.load()) return;
     if (!window || !loadScanoutApi()) {
         SCANOUT_LOG("initScanout: loadApi failed");
         return;
@@ -133,12 +133,15 @@ void VulkanRendererContext::initScanout() {
     scanoutLastSrc  = {}; scanoutLastDst = {};
     gameScVisible   = false;
     gameFrameDelivered.store(false);
-    scanoutActive.store(true);
-    SCANOUT_LOG("initScanout: OK");
+    // READY, not ACTIVE: the composite keeps presenting until the first real
+    // buffer hits scanoutSetBuffer (which engages scanoutActive). This is what
+    // keeps SHM-only sessions from black-screening.
+    scanoutReady.store(true);
+    SCANOUT_LOG("initScanout: OK (ready; engages on first buffer)");
 }
 
 void VulkanRendererContext::initScanoutFromWindows(ANativeWindow* gameWin, ANativeWindow* cursorWin) {
-    if (scanoutActive.load()) destroyScanout();
+    if (scanoutReady.load() || scanoutActive.load()) destroyScanout();
     if (!loadScanoutApi()) {
         ANativeWindow_release(gameWin); ANativeWindow_release(cursorWin);
         initScanout(); return;
@@ -173,12 +176,15 @@ void VulkanRendererContext::initScanoutFromWindows(ANativeWindow* gameWin, ANati
     scanoutLastSrc  = {}; scanoutLastDst = {};
     gameScVisible   = false;
     gameFrameDelivered.store(false);
-    scanoutActive.store(true);
-    SCANOUT_LOG("initScanoutFromWindows: OK (sibling path)");
+    // READY, not ACTIVE — see initScanout. Composite survives until the first
+    // directScanout buffer actually arrives.
+    scanoutReady.store(true);
+    SCANOUT_LOG("initScanoutFromWindows: OK (sibling path; ready, engages on first buffer)");
 }
 
 void VulkanRendererContext::destroyScanout() {
-    if (!scanoutActive.load()) return;
+    if (!scanoutReady.load() && !scanoutActive.load()) return;
+    scanoutReady.store(false);
     scanoutActive.store(false);
 
     if (scanoutGameSC || scanoutCursorSC) {
@@ -205,11 +211,16 @@ void VulkanRendererContext::destroyScanout() {
 }
 
 void VulkanRendererContext::scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y, int w, int h, int fenceFd) {
-    if (!scanoutActive.load() || !scanoutGameSC || !ahb || !scanoutGameTx) {
-        RLOG("scanoutSetBuffer: SKIPPED active=%d sc=%p ahb=%p tx=%p",
-            (int)scanoutActive.load(), scanoutGameSC, (void*)ahb, scanoutGameTx);
+    if (!scanoutReady.load() || !scanoutGameSC || !ahb || !scanoutGameTx) {
+        RLOG("scanoutSetBuffer: SKIPPED ready=%d sc=%p ahb=%p tx=%p",
+            (int)scanoutReady.load(), scanoutGameSC, (void*)ahb, scanoutGameTx);
         return;
     }
+
+    // First real buffer: ENGAGE. From here renderFrame retires the composite
+    // (one black clear frame, then the overlay owns the screen).
+    if (!scanoutActive.exchange(true))
+        SCANOUT_LOG("scanoutSetBuffer: first buffer — scanout ENGAGED");
 
     AHardwareBuffer_acquire(ahb);
 

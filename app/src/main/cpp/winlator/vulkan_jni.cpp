@@ -185,7 +185,10 @@ Java_com_winlator_renderer_VulkanRenderer_nativeScanoutSetCursorPos(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeIsScanoutActive(JNIEnv*, jobject, jlong handle) {
     auto* r = reinterpret_cast<VulkanRendererContext*>(handle);
-    return r ? (jboolean)r->scanoutActive.load() : JNI_FALSE;
+    // Java uses this as the routing gate ("may I hand this buffer to
+    // scanoutSetBuffer?"), so it reports READY — the engaged flag flips on the
+    // first delivered buffer inside scanoutSetBuffer itself.
+    return r ? (jboolean)(r->scanoutReady.load() || r->scanoutActive.load()) : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -287,7 +290,7 @@ Java_com_winlator_renderer_VulkanRenderer_nativeReattachSurface(JNIEnv* env, job
     ANativeWindow* win = ANativeWindow_fromSurface(env, surface);
     if (!win) return JNI_FALSE;
     bool ok = r->reattachSurface(win);
-    if (ok && r->scanoutActive.load()) {
+    if (ok && (r->scanoutReady.load() || r->scanoutActive.load())) {
         r->destroyScanout();
     }
     return (jboolean)ok;

@@ -151,6 +151,14 @@ public:
     void scanoutSetBuffer(AHardwareBuffer* ahb, int x, int y, int w, int h, int fenceFd = -1);
     void scanoutSetCursorImage(void* pixels, short w, short h, short stride);
     void scanoutSetCursorPos(short x, short y, short hotX, short hotY);
+    // scanoutReady: SC layers exist and scanoutSetBuffer may be called.
+    // scanoutActive: ENGAGED — the first real buffer arrived; renderFrame kills
+    // the composite (one black frame, then early-return). Kept separate so the
+    // composite dies only when scanout frames actually flow — a session whose
+    // game never delivers a directScanout buffer (e.g. SHM/GL titles under the
+    // native-scanout pipeline) keeps compositing normally instead of
+    // black-screening.
+    std::atomic<bool> scanoutReady{false};
     std::atomic<bool> scanoutActive{false};
     std::atomic<bool> gameFrameDelivered{false};
     std::atomic<bool> surfaceDetached{false};
