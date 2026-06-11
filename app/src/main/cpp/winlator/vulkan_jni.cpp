@@ -82,6 +82,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeDestroy(JNIEnv*, jobject, jlong h) {
     delete reinterpret_cast<VulkanRendererContext*>(h);
 }
+// Metric bridge (dac_present_receiver.cpp, same lib): real frametime/jitter
+// for COMPOSITE-path frames. Size-gated by the callers below so cursors,
+// tooltips and tiny popups don't pollute the game's frame interval; no-ops
+// while a DAC session owns the metrics or scanout is engaged.
+extern "C" uint64_t dac_now_us();
+extern "C" void dac_record_composite_frame(uint64_t nowUs);
+static inline void jni_record_composite(VulkanRendererContext* r, jshort w, jshort h) {
+    if (w >= 256 && h >= 256 && !r->scanoutActive.load(std::memory_order_relaxed))
+        dac_record_composite_frame(dac_now_us());
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContent(
     JNIEnv* env, jobject, jlong handle, jlong id, jobject buf, jshort w, jshort h, jshort stride, jint x, jint y)
@@ -89,15 +100,20 @@ Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContent(
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
     if (!r||!buf) return;
     void* px=env->GetDirectBufferAddress(buf);
-    if (px && env->GetDirectBufferCapacity(buf)>=(jlong)w*h*4)
+    if (px && env->GetDirectBufferCapacity(buf)>=(jlong)w*h*4) {
+        jni_record_composite(r,w,h);
         r->updateWindowContent(id,px,w,h,stride,x,y);
+    }
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeUpdateWindowContentAHB(
     JNIEnv*, jobject, jlong handle, jlong id, jlong ahbPtr, jshort w, jshort h, jint x, jint y)
 {
     auto* r=reinterpret_cast<VulkanRendererContext*>(handle);
-    if (r&&ahbPtr) r->updateWindowContentAHB(id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y);
+    if (r&&ahbPtr) {
+        jni_record_composite(r,w,h);
+        r->updateWindowContentAHB(id,reinterpret_cast<AHardwareBuffer*>(ahbPtr),w,h,x,y);
+    }
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_winlator_renderer_VulkanRenderer_nativeSetTransform(

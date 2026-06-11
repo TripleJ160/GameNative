@@ -144,6 +144,20 @@ extern "C" void dac_record_frame(uint64_t nowUs) {
     }
 }
 
+/* Composite-path frame arrival (classic native, or a native-scanout session
+ * whose game never delivers DRI3 buffers and thus composites — e.g. SHM/GL
+ * titles). Feeds the SAME frametime/jitter EMAs so the HUD shows REAL measured
+ * frame intervals in every pipeline mode instead of the synthetic 1000/FPS
+ * fallback (which is flat by construction and reports jitter=0).
+ * No-op while a DAC receiver session is live — the receiver's scanout path
+ * owns the metrics then, and sporadic X desktop draws must not contaminate
+ * them. (Benign race on g_dacReceiver: worst case is one stray sample into a
+ * just-started session, which the EMA absorbs.) */
+extern "C" void dac_record_composite_frame(uint64_t nowUs) {
+    if (g_dacReceiver != nullptr) return;
+    dac_record_frame(nowUs);
+}
+
 /* Send MSG_RELEASE. When releaseFenceFd >= 0 it is SurfaceFlinger's release
  * fence for that slot's buffer, shipped as SCM_RIGHTS so the guest's acquire
  * can CPU-wait on it before letting DXVK render into the buffer again. The fd

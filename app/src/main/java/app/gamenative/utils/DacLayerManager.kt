@@ -104,7 +104,10 @@ object DacLayerManager {
     // release fence (SCM_RIGHTS); acquire CPU-waits it before slot reuse.
     // Wire structs now come from the shared dac_protocol.h (layout pinned by
     // static_asserts on both endpoints).
-    private const val RUNTIME_VERSION = "v1.2.0-android-arm64-v8a"
+    // v1.3.1: in-flight depth knob — defaults to PROVEN pacing (FIFO
+    // image_count-1, non-FIFO saturation); WINLATOR_AHB_MAX_INFLIGHT=N
+    // overrides for experiments. (v1.3.0's default-2 regressed FIFO latency.)
+    private const val RUNTIME_VERSION = "v1.3.1-android-arm64-v8a"
 
     // Asset paths (shipped in Chunk B once the wrapper-ABI .so is built)
     private const val ASSET_DIR = "dac/android_arm64_v8a"
@@ -232,6 +235,11 @@ object DacLayerManager {
         val directRender = if (pipeline(container) == PIPELINE_QUALITY) "1" else "0"
         envVars.put(ENV_ENABLE, "1")
         envVars.put(ENV_DIRECT_RENDER, directRender)
+        // In-flight depth is left at the layer's proven default (FIFO caps at
+        // image_count-1; MAILBOX/IMMEDIATE at saturation). Depth 2 was measured
+        // to RAISE latency under honest onComplete-timed releases (NFS MW
+        // 9ms→20.8ms) — it only helps once an early commit-time pacing release
+        // is added. Set WINLATOR_AHB_MAX_INFLIGHT here only for experiments.
         // The AHB server (AHBSocketServerComponent) binds under the IMAGEFS ROOT —
         // createSocket(imageFs.rootDir, AHB_SERVER_PATH) → <imagefs>/tmp/.ahb/AHB0 —
         // NOT under container.rootDir (the per-game home, .../imagefs/home/xuser-*).
